@@ -1,0 +1,13 @@
+# Normalize everything to LF in the repository.
+* text=auto eol=lf
+
+*.cs      text eol=lf diff=csharp
+*.meta    text eol=lf
+*.unity   text eol=lf
+*.asset   text eol=lf
+*.prefab  text eol=lf
+*.asmdef  text eol=lf
+*.md      text eol=lf
+
+# No Git LFS: no binary assets are tracked, Exports/ is ignored.
+# Revisit only if a .glb or a reference video is ever committed.
