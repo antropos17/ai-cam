@@ -9,25 +9,26 @@ Everything else in SPEC.md (CI, attribution, capsule viewer, subscription) is ba
 ## DAY 1 — Core & proof
 
 ### Block 1.1 — Scene & harness
-- Unity 6 URP project `BugCam`. Demo scene: tower of 40–60 Rigidbody cubes + one projectile/impulse. Tune for sensitivity (tall, narrow base, low friction).
-- `SimulationHarness`: Simulation Mode = Script; local `PhysicsScene`; run = N × `Simulate(0.02f)`; clone scene into isolated physics world from saved initial state.
-- VERIFY: two identical runs match bitwise (fallback tolerance 1e-6). If not: recreate PhysicsScene per run, fix instantiation order, retry.
+- Unity 6 URP project `BugCam`. Demo scene = test scene = `Assets/BugCam/Tests/TowerScene.unity`: tower of 40–60 Rigidbody cubes + one projectile/impulse, generated procedurally by an Editor menu item (no hand-authored `.unity`). Tune for sensitivity (tall, narrow base, low friction).
+- `SimulationHarness`: Simulation Mode = Script; local `PhysicsScene`; run = N × `Simulate(0.02f)`; clone scene into isolated physics world from saved initial state. PhysicsScene is recreated per run by default.
+- VERIFY: two identical runs match within 1e-6 per component (the gate). Report numbers, not pass/fail: `bitwiseEqual`, `maxComponentDelta`, `firstDivergingStep`, `firstDivergingBody`, `managedBytesAllocatedInLoop`. Run order A, B, A′ (B = perturbed) so cross-run state leakage is visible. Repeat once after an Editor restart to separate in-session from cross-session determinism. If the gate fails: fix instantiation order, then record it as a finding — do not hide it.
 
 ### Block 1.2 — State recording
-- `StateRecorder`: per physics step per body — position, rotation, linear/angular velocity, sleeping. Flat preallocated arrays `[runs × steps × bodies × 13]`.
-- `RunResult`: frames + metadata (epsilon, seed, duration).
-- VERIFY: replaying recorded frames kinematically reproduces the visual motion of the live run.
+- `StateRecorder`: per physics step per body — position, rotation, linear/angular velocity, sleeping. Flat preallocated arrays `[runs × steps × bodies × 14]`, field order `pos.xyz, rot.xyzw, vel.xyz, angVel.xyz, sleeping(0f|1f)`.
+- `RunResult`: frames + metadata — `epsilon` (metres), `perturbation` (axis / magnitude / bodyId), `stepCount`, `simulatedTime = steps × FixedStep`, `seed = 0` (reserved; non-zero only for a randomized perturbation mode). Wall-clock, if recorded at all, lives in a separate `wallClockMs` field excluded from every comparison and hash.
+- VERIFY: kinematic replay reproduces the recorded transforms frame for frame — `maxComponentDelta == 0`, asserted in the harness. Visual inspection is an optional extra, never the verification.
 
 ### Block 1.3 — Divergence Engine
 - Per-body per-frame: posError/objectScale, rotation angle error, velocity error, sleep mismatch. Scene Divergence Score = weighted sum.
-- Significant = score > threshold sustained ≥ 5 steps.
-- Output: firstDivergenceFrame, maxSpread (m), affectedBodies, amplification = maxSpread / epsilon.
+- Significant = score > threshold, sustained ≥ 5 steps, AND ≥ 1 tracked body exceeds `DivergenceSettings.PerBodyPositionThreshold`.
+- Output: firstDivergenceFrame, maxSpread (m), affectedBodies, amplification = maxSpread(m) / epsilon(m) — both in metres; mm is display formatting only.
 - VERIFY: unit tests on synthetic trajectories (known divergence frame must be found exactly; pure noise must yield none).
 
 ### Block 1.4 — Adaptive Epsilon Search
-- Exponential from 0.01 mm ×2 up to 10 mm ceiling → binary search 6–8 iters → fan: 10–20 runs at {0.8, 0.9, 1.0, 1.1, 1.2} × threshold, perturb X/Y/Z.
+- Exponential from 0.01 mm ×2 up to 10 mm ceiling → binary search 6–8 iters → fan: exactly 15 runs = {0.8, 0.9, 1.0, 1.1, 1.2} × threshold across axes X/Y/Z, plus baseline = 16th run.
 - No divergence in range → verdict `STABLE WITHIN TESTED RANGE`.
-- VERIFY: on demo scene, search returns a stable threshold across 3 repeated searches (±1 binary step).
+- Bisection assumes divergence is monotonic in epsilon; a chaotic scene does not owe us that. Before trusting bisection, run a 12-point log-uniform epsilon ladder (0.01 → 10 mm, one run each) and print `epsilon → firstDivergenceFrame → maxSpread`. Non-monotonicity is a finding for STATUS.md, and the result is then reported as a threshold *within the tested range*.
+- VERIFY, two separate checks: (a) a repeat with identical configuration must be bit-identical — this is the determinism regression test, not a convergence test; (b) three searches from different starting conditions (start 0.01 mm ×2; start 0.02 mm ×2; descend from the 10 mm ceiling), on different axes, must land within ±1 bisection step of each other.
 
 ### Block 1.5 — Ghost visualization
 - Trajectories of all runs: LineRenderer or DrawMeshInstanced ghosts. Baseline white, runs colored by divergence magnitude. Red sphere at first divergence. Show only top-10 diverging bodies + baseline.
@@ -73,7 +74,7 @@ Full cycle "press button → get MP4" with zero manual editing + published video
 ## Known risks → mitigations
 | Risk | Mitigation |
 |---|---|
-| Runs don't match bitwise | Recreate PhysicsScene per run, fixed instantiation order; compare at 1e-6 |
+| Runs don't match within 1e-6 | PhysicsScene is already recreated per run; fix instantiation order; if it persists, record as a finding (solver/order sensitivity) |
 | Scene too stable, no fan | Taller tower, narrower base, less friction; perturb projectile instead of brick |
 | 20 runs × 250 steps slow | Simulate without rendering (milliseconds); render only replay |
 | Recorder won't record in Edit Mode | Replay in Play Mode; harness in Edit Mode |
