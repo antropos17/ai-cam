@@ -43,7 +43,33 @@ Console output with threshold / first divergence frame / spread / amplification 
 
 ### Block 2.1 — Retro replay
 - `RetroPlayer`: kinematic frame-by-frame playback in main scene, time scrub, slow-mo 0.1–0.25×.
-- 4 cameras around first-divergence point: overview, contact close-up, opposite angle, along-trajectory. Positions from affected-body bounds + raycast visibility check. 2×2 split via viewport rects or RenderTextures.
+- 4 evidence cameras around the first-divergence point, chosen by a **deterministic scored post-process** — not by hand-placed roles and not by a binary visibility test. 2×2 split via viewport rects or RenderTextures.
+
+**Timing.** Selection runs AFTER both the baseline and the perturbed replay are complete, as a post-process over recorded trajectories. Never per-frame during simulation.
+
+**Candidates.**
+- Deterministic Fibonacci sphere around the divergence event; candidate count N is recorded in the manifest. No `Random` anywhere in the path.
+- Sphere radius derives from the divergence-event bounds only — not the union of all affected bodies.
+- Candidates below the ground plane are discarded before scoring.
+
+**Scoring** — per candidate, summed over affected bodies:
+- in-frustum: `GeometryUtility.CalculateFrustumPlanes` + `GeometryUtility.TestPlanesAABB`
+- occlusion: fractional, 9 raycasts per body (AABB centre + 8 corners), score = hits / 9. Never binary.
+- screen-space separation between baseline and perturbed positions via `Camera.WorldToViewportPoint`, measured in pixels
+- centrality penalty for bodies near the frame edges
+- ties broken strictly by candidate index, never by float comparison
+
+**Winners.**
+- Camera 1 = highest score.
+- Cameras 2–4: filter to the top 25% by score FIRST, then optimize within the survivors for (a) orthogonality to camera 1, (b) contact proximity, (c) trajectory alignment. Constraint-then-optimize, in that order.
+
+**Honest verdict (required).** If the best candidate score falls below `DivergenceSettings.MinEvidenceCoverageScore`, output `EVIDENCE COVERAGE: LOW` with the best score, the count of affected bodies visible, and the reason. This is a valid result in the same sense as `STABLE WITHIN TESTED RANGE` — do not emit four poor cameras instead.
+
+**Manifest** (`camera-plan.json`, written when the capsule lands on Day 3): algorithm version, candidate count N, and the score of EVERY candidate including the rejected ones — provenance requires the losers. Per chosen camera: bodies in frame, distances, fractional occlusion values, final score.
+
+**Constraints.** No Cinemachine, no MCP, no `com.unity.perception` (abandoned since Nov 2024). Plain `UnityEngine.Camera` plus the three APIs named above. Nothing lands in `Core/` — this lives in `Evidence/EvidenceCameras.cs`.
+
+- VERIFY: selection is reproducible bit-for-bit by a third party from the same recorded runs — re-running selection over identical recorded trajectories yields identical candidate scores, identical winner indices, and an identical `camera-plan.json`.
 
 ### Block 2.2 — Evidence overlay + export
 - UI Canvas overlay: test numbers, frame counter, timeline, logo.
