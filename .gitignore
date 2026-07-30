@@ -45,6 +45,9 @@ sysinfo.txt
 *.app
 crashlytics-build.properties
 
+# Claude Code hook telemetry written into cwd (contains prompt text — never commit)
+events.jsonl
+
 # BugCam outputs (regenerated, never committed)
 /[Ee]xports/
 /[Ee]vidence[Oo]ut/
