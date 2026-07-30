@@ -22,6 +22,24 @@ Everything else in SPEC.md (CI, attribution, capsule viewer, subscription) is ba
 - Per-body per-frame: posError/objectScale, rotation angle error, velocity error, sleep mismatch. Scene Divergence Score = weighted sum.
 - Significant = score > threshold, sustained ≥ 5 steps, AND ≥ 1 tracked body exceeds `DivergenceSettings.PerBodyPositionThreshold`.
 - Output: firstDivergenceFrame, maxSpread (m), affectedBodies, amplification = maxSpread(m) / epsilon(m) — both in metres; mm is display formatting only.
+
+**`DivergenceSettings` field contract.** `ScriptableObject` with `[CreateAssetMenu]`; defaults live in code, no hand-written `.asset` YAML.
+
+| Field | Unit | Role |
+|---|---|---|
+| `PerBodyPositionThreshold` | metres | the "meaningfully affected" condition |
+| `PerBodyRotationThreshold` | degrees | per-body rotation gate |
+| `PerBodyVelocityThreshold` | m/s | per-body velocity gate |
+| `SceneScoreThreshold` | — | weighted-sum gate |
+| `SustainedSteps` = 5 | steps | consecutive steps required |
+| `WeightPosition` / `WeightRotation` / `WeightVelocity` / `WeightSleep` | — | weights of the Scene Divergence Score |
+| `MinEvidenceCoverageScore` | — | Block 2.1 honest-verdict gate |
+
+Rules:
+- Every default value carries a one-line comment stating **why that number**, not merely what it is.
+- No threshold may be referenced anywhere in `Core/` or `Evidence/` unless it exists in this contract.
+- If a later block needs a new threshold, it is added to this contract first, in the same commit.
+
 - VERIFY: unit tests on synthetic trajectories (known divergence frame must be found exactly; pure noise must yield none).
 
 ### Block 1.4 — Adaptive Epsilon Search
