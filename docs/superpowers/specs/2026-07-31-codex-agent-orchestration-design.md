@@ -43,7 +43,16 @@ Create these project-scoped files after approval:
 - `.codex/agents/bugcam-reviewer.toml`
 - `.codex/agents/unity-researcher.toml`
 
-The project config enables agents and limits spawned threads to three. Agent model names and reasoning effort remain unset so they inherit the current primary-task configuration rather than becoming stale.
+The project config enables the `multi_agent` feature and agents, then limits spawned threads to three. Agent model names and reasoning effort remain unset so they inherit the current primary-task configuration rather than becoming stale.
+
+Codex CLI 0.103.0 compatibility requires one additional activation step. Its `codex features --help` reports that feature configuration is loaded from `~/.codex/config.toml`, and the project `.codex/config.toml` alone was verified to leave the effective `multi_agent` state false. Run the supported global command once:
+
+```powershell
+codex features enable multi_agent
+codex features list
+```
+
+Expected verification: the `multi_agent` row ends in `experimental       true`. Retain `[features] multi_agent = true` in the project config so newer clients can use the project-scoped setting.
 
 `bugcam_reviewer` and `unity_researcher` use `sandbox_mode = "read-only"`. The implementer inherits the parent workspace permissions and is restricted by its developer instructions and `AGENTS.md`.
 
@@ -75,4 +84,3 @@ Configuration is complete when:
 - `AGENTS.md` contains the dispatch and single-writer rules;
 - a dry-run delegation can ask `unity_researcher` for the installed Unity version without changing the worktree;
 - `git diff` shows no changes outside the orchestration files and the intentional `AGENTS.md` addition.
-
