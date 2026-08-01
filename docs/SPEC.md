@@ -86,9 +86,9 @@ Possible solver/order sensitivity
 
 ## 5. Divergence Engine
 
-Tracked per physics step: position, rotation, linear velocity, angular velocity, sleeping, active state, contacts*, collision pair IDs*, selected custom state*. (* = backlog beyond v0.1; v0.1 tracks pos/rot/vel/angVel/sleeping only — see PLAN.md.)
+Tracked per physics step: position, rotation, linear velocity, angular velocity, sleeping, active state*, contacts*, collision pair IDs*, selected custom state*. (* = backlog beyond v0.1; v0.1 tracks pos/rot/vel/angVel/sleeping only — see PLAN.md.)
 
-Per-body normalized metrics: position error / object scale, rotation error / threshold, velocity error / threshold, contact mismatch*, state mismatch. Scene Divergence Score = weighted sum over tracked bodies.
+Per-body normalized metrics: position error / object scale, rotation error / threshold, velocity error / threshold, contact mismatch*, state mismatch*. Scene Divergence Score = weighted sum over tracked bodies.
 
 Divergence is significant only when it: exceeds threshold AND persists several physics steps AND affects an important body or sufficient share of the scene. This filters numerical noise.
 

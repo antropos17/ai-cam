@@ -36,6 +36,7 @@
 # OS
 .DS_Store
 Thumbs.db
+Desktop.ini
 
 # Unity crash / build artifacts
 sysinfo.txt
@@ -45,10 +46,51 @@ sysinfo.txt
 *.app
 crashlytics-build.properties
 
-# Claude Code hook telemetry written into cwd (contains prompt text — never commit)
+# Environment and credentials (never commit)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+credentials.json
+**/serviceAccount*.json
+**/google-services.json
+**/GoogleService-Info.plist
+.aws/
+*.kubeconfig
+
+# Claude Code / local agent telemetry (may contain prompt text)
 events.jsonl
+
+# Cursor local data
+.cursor/
 
 # BugCam outputs (regenerated, never committed)
 /[Ee]xports/
 /[Ee]vidence[Oo]ut/
 *.bugcam
+*.mp4
+*.webm
+
+# Local databases / caches / coverage
+*.db
+*.sqlite
+*.sqlite3
+.cache/
+coverage/
+*.coverage
+TestResults/
+*.log
+
+# AI / ML weight caches (not used in v0.1; keep out if added locally)
+*.onnx
+*.pt
+*.pth
+*.safetensors
+*.gguf
+**/models/weights/
+**/huggingface/
+**/.huggingface/

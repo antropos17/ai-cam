@@ -36,6 +36,27 @@ Everything else in SPEC.md (CI, attribution, capsule viewer, subscription) is ba
 | `WeightPosition` / `WeightRotation` / `WeightVelocity` / `WeightSleep` | — | weights of the Scene Divergence Score |
 | `MinEvidenceCoverageScore` | — | Block 2.1 honest-verdict gate |
 
+Epsilon search (Block 1.4) — same asset, per `CLAUDE.md` "all thresholds live in one `DivergenceSettings`":
+
+| Field | Unit | Role |
+|---|---|---|
+| `EpsilonStart` = 1e-5 | metres | first magnitude of the exponential search (0.01 mm) |
+| `EpsilonGrowthFactor` = 2 | — | multiplier per exponential step |
+| `EpsilonCeiling` = 1e-2 | metres | upper bound of the tested range (10 mm); above it the verdict is `STABLE WITHIN TESTED RANGE` |
+| `BisectionIterations` | steps | binary-search depth; the single default is fixed in Block 1.4 (range 6–8 was never narrowed) |
+| `LadderPointCount` = 12 | points | log-uniform monotonicity ladder run before bisection is trusted |
+| `FanMultipliers` = {0.8, 0.9, 1.0, 1.1, 1.2} | × threshold | fan spread; 5 multipliers × 3 axes = 15 runs + baseline |
+
+Evidence (Blocks 1.5, 2.1) — same asset:
+
+| Field | Unit | Role |
+|---|---|---|
+| `GhostBodyLimit` = 10 | bodies | top-N diverging bodies drawn as ghosts, plus baseline |
+| `EvidenceCandidateCount` | candidates | Fibonacci-sphere N; recorded in `camera-plan.json` |
+| `EvidenceOcclusionRays` = 9 | rays | AABB centre + 8 corners; fractional occlusion = hits / rays |
+| `EvidenceTopScoreFraction` = 0.25 | — | survivor filter applied before optimizing cameras 2–4 |
+| `WeightEvidenceCentrality` | — | frame-edge penalty in candidate scoring |
+
 Rules:
 - Every default value carries a one-line comment stating **why that number**, not merely what it is.
 - No threshold may be referenced anywhere in `Core/` or `Evidence/` unless it exists in this contract.
@@ -121,6 +142,6 @@ Full cycle "press button → get MP4" with zero manual editing + published video
 |---|---|
 | Runs don't match within 1e-6 | PhysicsScene is already recreated per run; fix instantiation order; if it persists, record as a finding (solver/order sensitivity) |
 | Scene too stable, no fan | Taller tower, narrower base, less friction; perturb projectile instead of brick |
-| 20 runs × 250 steps slow | Simulate without rendering (milliseconds); render only replay |
+| 16 runs × 250 steps slow | Simulate without rendering (milliseconds); render only replay |
 | Recorder won't record in Edit Mode | Replay in Play Mode; harness in Edit Mode |
 | 800-line ghost spaghetti | Top-10 bodies only + baseline |
