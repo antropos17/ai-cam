@@ -224,9 +224,17 @@ namespace BugCam.Core
             var simulationScene = default(Scene);
             try
             {
+                // LocalPhysicsMode scenes require Play Mode; Edit Mode must use
+                // EditorSceneManager.NewScene instead (not available in Core).
                 simulationScene = SceneManager.CreateScene(
                     "BugCam Simulation " + nextSceneId++,
                     new CreateSceneParameters(LocalPhysicsMode.Physics3D));
+                if (!simulationScene.IsValid() || !simulationScene.isLoaded)
+                {
+                    return SimulationRunResult.Failure(
+                        "Failed to create a loaded local physics simulation scene.");
+                }
+
                 var physicsScene = simulationScene.GetPhysicsScene();
                 if (!physicsScene.IsValid())
                 {
@@ -247,6 +255,12 @@ namespace BugCam.Core
                 var allocatedBytesBeforeLoop = GC.GetAllocatedBytesForCurrentThread();
                 for (var step = 0; step < request.StepCount; step++)
                 {
+                    if (!physicsScene.IsValid())
+                    {
+                        return SimulationRunResult.Failure(
+                            "The local PhysicsScene became invalid before Simulate.");
+                    }
+
                     physicsScene.Simulate(BugCamConstants.FixedStep);
                     RecordState(runtimeBodies, stateFrames, step);
                 }

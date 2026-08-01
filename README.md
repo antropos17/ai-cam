@@ -81,27 +81,23 @@ Unity MCP / Claude / Codex agent configs in this repo do not embed API keys.
 1. Open the project in the Unity Editor.
 2. Set Physics **Simulation Mode** as required by the harness (Script) when running probes — see `docs/PLAN.md` Block 1.1.
 3. Use BugCam Editor menu items / probes described in `docs/STATUS.md` and `docs/PLAN.md`.
-4. Play Mode may be required for some `PhysicsScene` paths; Edit Mode alone is not sufficient for every harness call (see known test failure below).
+4. Local `PhysicsScene` creation via `SceneManager.CreateScene(..., LocalPhysicsMode.Physics3D)` requires Play Mode. Simulation correctness tests live in the PlayMode assembly.
 
 Headless / batchmode:
 
 ```text
 "<UnityEditor>\Unity.exe" -batchmode -nographics -projectPath "<repo>" -runTests -testPlatform EditMode -testResults TestResults/EditMode.xml -logFile - -quit
+"<UnityEditor>\Unity.exe" -batchmode -nographics -projectPath "<repo>" -runTests -testPlatform PlayMode -testResults TestResults/PlayMode.xml -logFile - -quit
 ```
+
+Editor automation: write `Library/BugCamTest.request` with `all`, `editmode`, or `playmode`. Results land at `Library/BugCamTestResults.EditMode.xml`, `Library/BugCamTestResults.PlayMode.xml`, and `Library/BugCamTestResults.xml`.
 
 Do not commit generated `Library/`, `Logs/`, or `TestResults/`.
 
 ## Tests
 
-EditMode assembly: `BugCam.Tests`.
-
-Last recorded local result (`Library/BugCamTestResults.xml`, not committed):
-
-| Test | Result |
-|---|---|
-| `CoreAssemblyExposesSimulationHarness` | Passed |
-| `CoreAssemblyExposesBlockOneSimulationContract` | Passed |
-| `RunSimulatesOneBodyInFreshLocalPhysicsScene` | Failed — `SceneManager.CreateScene` / local physics requires Play Mode (`EditorSceneManager.NewScene` path still open) |
+- EditMode assembly: `BugCam.Tests` — reflection/contract and Editor generator tests
+- PlayMode assembly: `BugCam.Tests.PlayMode` — `SimulationHarness` / local `PhysicsScene` runs
 
 There is no separate lint/typecheck toolchain outside the Unity compiler for this project.
 
