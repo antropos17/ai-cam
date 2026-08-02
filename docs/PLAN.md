@@ -143,5 +143,5 @@ Full cycle "press button → get MP4" with zero manual editing + published video
 | Runs don't match within 1e-6 | PhysicsScene is already recreated per run; fix instantiation order; if it persists, record as a finding (solver/order sensitivity) |
 | Scene too stable, no fan | Taller tower, narrower base, less friction; perturb projectile instead of brick |
 | 16 runs × 250 steps slow | Simulate without rendering (milliseconds); render only replay |
-| Recorder won't record in Edit Mode | Replay in Play Mode; harness in Edit Mode |
+| Recorder won't record in Edit Mode | Replay in Play Mode. Production `SimulationHarness` also requires Play Mode — local `PhysicsScene` via `SceneManager.CreateScene(..., LocalPhysicsMode.Physics3D)` is a runtime path (Edit Mode contract tests assert the deterministic failure; simulation correctness lives in `BugCam.Tests.PlayMode`) |
 | 800-line ghost spaghetti | Top-10 bodies only + baseline |

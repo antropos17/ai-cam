@@ -1,4 +1,5 @@
 #if UNITY_EDITOR
+using System;
 using System.IO;
 using UnityEditor;
 using UnityEditor.TestTools.TestRunner.Api;
@@ -28,26 +29,84 @@ namespace BugCam.Editor
         private static readonly string PlayModeResultPath = Path.Combine(
             ProjectRoot,
             "Library/BugCamTestResults.PlayMode.xml");
-        private static readonly string CombinedResultPath = Path.Combine(
+        // LatestResultPath holds only the most recently completed suite (EditMode or
+        // PlayMode). It is not a merged combined report of both suites.
+        private static readonly string LatestResultPath = Path.Combine(
             ProjectRoot,
             "Library/BugCamTestResults.xml");
 
         private static bool isRunning;
+        private static double suiteStartedAt = -1d;
 
         static BugCamTestAutomation()
         {
             EditorApplication.update += Poll;
+            EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
+            ClearStalePendingMarkerIfNeeded();
+        }
+
+        private static void OnPlayModeStateChanged(PlayModeStateChange state)
+        {
+            if (state == PlayModeStateChange.EnteredEditMode &&
+                isRunning &&
+                !File.Exists(PlayModePendingPath) &&
+                suiteStartedAt > 0d &&
+                EditorApplication.timeSinceStartup - suiteStartedAt > 120d)
+            {
+                // PlayMode run ended without RunFinished (domain reload / abort).
+                isRunning = false;
+                suiteStartedAt = -1d;
+            }
+        }
+
+        private static void ClearStalePendingMarkerIfNeeded()
+        {
+            if (!File.Exists(PlayModePendingPath))
+            {
+                return;
+            }
+
+            try
+            {
+                var pendingAge = DateTime.UtcNow - File.GetLastWriteTimeUtc(PlayModePendingPath);
+                // A pending marker older than 30 minutes is treated as leftover from a
+                // crashed or abandoned Editor session, not an in-flight chain.
+                if (pendingAge.TotalMinutes > 30d)
+                {
+                    File.Delete(PlayModePendingPath);
+                }
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
         }
 
         private static void Poll()
         {
             if (File.Exists(RecoveryRequestPath))
             {
-                File.Delete(RecoveryRequestPath);
+                try
+                {
+                    File.Delete(RecoveryRequestPath);
+                }
+                catch (IOException)
+                {
+                }
+
                 isRunning = false;
+                suiteStartedAt = -1d;
                 if (File.Exists(PlayModePendingPath))
                 {
-                    File.Delete(PlayModePendingPath);
+                    try
+                    {
+                        File.Delete(PlayModePendingPath);
+                    }
+                    catch (IOException)
+                    {
+                    }
                 }
 
                 if (EditorApplication.isPlayingOrWillChangePlaymode)
@@ -60,7 +119,15 @@ namespace BugCam.Editor
 
             if (!EditorApplication.isCompiling && File.Exists(PreviewRequestPath))
             {
-                File.Delete(PreviewRequestPath);
+                try
+                {
+                    File.Delete(PreviewRequestPath);
+                }
+                catch (IOException)
+                {
+                    return;
+                }
+
                 TowerScenePreviewExporter.Export();
                 return;
             }
@@ -74,9 +141,18 @@ namespace BugCam.Editor
             // PlayMode run cannot drop an in-memory "chain next suite" flag.
             if (File.Exists(PlayModePendingPath))
             {
-                File.Delete(PlayModePendingPath);
+                try
+                {
+                    File.Delete(PlayModePendingPath);
+                }
+                catch (IOException)
+                {
+                    return;
+                }
+
                 isRunning = true;
-                ExecuteSuite(TestMode.PlayMode, PlayModeResultPath, alsoCopyToCombined: true);
+                suiteStartedAt = EditorApplication.timeSinceStartup;
+                ExecuteSuite(TestMode.PlayMode, PlayModeResultPath, alsoCopyToLatest: true);
                 return;
             }
 
@@ -92,12 +168,21 @@ namespace BugCam.Editor
             }
 
             var requestKind = ReadRequestKind(RequestPath);
-            File.Delete(RequestPath);
+            try
+            {
+                File.Delete(RequestPath);
+            }
+            catch (IOException)
+            {
+                return;
+            }
+
             isRunning = true;
+            suiteStartedAt = EditorApplication.timeSinceStartup;
 
             if (requestKind == "playmode")
             {
-                ExecuteSuite(TestMode.PlayMode, PlayModeResultPath, alsoCopyToCombined: true);
+                ExecuteSuite(TestMode.PlayMode, PlayModeResultPath, alsoCopyToLatest: true);
                 return;
             }
 
@@ -105,7 +190,7 @@ namespace BugCam.Editor
             ExecuteSuite(
                 TestMode.EditMode,
                 EditModeResultPath,
-                alsoCopyToCombined: !chainPlayMode,
+                alsoCopyToLatest: !chainPlayMode,
                 chainPlayModeAfter: chainPlayMode);
         }
 
@@ -129,44 +214,69 @@ namespace BugCam.Editor
         private static void ExecuteSuite(
             TestMode mode,
             string resultPath,
-            bool alsoCopyToCombined,
+            bool alsoCopyToLatest,
             bool chainPlayModeAfter = false)
         {
-            var api = ScriptableObject.CreateInstance<TestRunnerApi>();
-            var callbacks = new ResultCallbacks(
-                api,
-                resultPath,
-                alsoCopyToCombined,
-                chainPlayModeAfter);
-            api.RegisterCallbacks(callbacks);
-
-            var assemblyNames = mode == TestMode.EditMode
-                ? new[] { "BugCam.Tests" }
-                : new[] { "BugCam.Tests.PlayMode" };
-
-            api.Execute(new ExecutionSettings(new Filter
+            try
             {
-                testMode = mode,
-                assemblyNames = assemblyNames
-            }));
+                var api = ScriptableObject.CreateInstance<TestRunnerApi>();
+                var callbacks = new ResultCallbacks(
+                    api,
+                    resultPath,
+                    alsoCopyToLatest,
+                    chainPlayModeAfter);
+                api.RegisterCallbacks(callbacks);
+
+                var assemblyNames = mode == TestMode.EditMode
+                    ? new[] { "BugCam.Tests" }
+                    : new[] { "BugCam.Tests.PlayMode" };
+
+                api.Execute(new ExecutionSettings(new Filter
+                {
+                    testMode = mode,
+                    assemblyNames = assemblyNames
+                }));
+            }
+            catch (Exception)
+            {
+                isRunning = false;
+                suiteStartedAt = -1d;
+                if (File.Exists(PlayModePendingPath))
+                {
+                    try
+                    {
+                        File.Delete(PlayModePendingPath);
+                    }
+                    catch (IOException)
+                    {
+                    }
+                }
+
+                if (EditorApplication.isPlayingOrWillChangePlaymode)
+                {
+                    EditorApplication.ExitPlaymode();
+                }
+
+                throw;
+            }
         }
 
         private sealed class ResultCallbacks : ICallbacks
         {
             private readonly TestRunnerApi api;
             private readonly string resultPath;
-            private readonly bool alsoCopyToCombined;
+            private readonly bool alsoCopyToLatest;
             private readonly bool chainPlayModeAfter;
 
             public ResultCallbacks(
                 TestRunnerApi api,
                 string resultPath,
-                bool alsoCopyToCombined,
+                bool alsoCopyToLatest,
                 bool chainPlayModeAfter)
             {
                 this.api = api;
                 this.resultPath = resultPath;
-                this.alsoCopyToCombined = alsoCopyToCombined;
+                this.alsoCopyToLatest = alsoCopyToLatest;
                 this.chainPlayModeAfter = chainPlayModeAfter;
             }
 
@@ -176,19 +286,31 @@ namespace BugCam.Editor
 
             public void RunFinished(ITestResultAdaptor result)
             {
-                TestRunnerApi.SaveResultToFile(result, resultPath);
-                if (alsoCopyToCombined || !chainPlayModeAfter)
+                try
                 {
-                    File.Copy(resultPath, CombinedResultPath, overwrite: true);
+                    TestRunnerApi.SaveResultToFile(result, resultPath);
+                    if (alsoCopyToLatest || !chainPlayModeAfter)
+                    {
+                        File.Copy(resultPath, LatestResultPath, overwrite: true);
+                    }
+
+                    if (chainPlayModeAfter)
+                    {
+                        File.WriteAllText(PlayModePendingPath, "playmode");
+                    }
                 }
-
-                api.UnregisterCallbacks(this);
-                UnityEngine.Object.DestroyImmediate(api);
-                isRunning = false;
-
-                if (chainPlayModeAfter)
+                finally
                 {
-                    File.WriteAllText(PlayModePendingPath, "playmode");
+                    api.UnregisterCallbacks(this);
+                    UnityEngine.Object.DestroyImmediate(api);
+                    isRunning = false;
+                    suiteStartedAt = -1d;
+
+                    if (!chainPlayModeAfter &&
+                        EditorApplication.isPlayingOrWillChangePlaymode)
+                    {
+                        EditorApplication.ExitPlaymode();
+                    }
                 }
             }
 

@@ -22,6 +22,81 @@ namespace BugCam.Tests
         }
 
         [Test]
+        public void RunFailsDeterministicallyOutsidePlayModeWithoutCreatingLocalPhysicsScene()
+        {
+            Assert.That(
+                Application.isPlaying,
+                Is.False,
+                "This EditMode contract test must run outside Play Mode.");
+
+            var bodyType = Type.GetType("BugCam.Core.SimulationBodyDefinition, BugCam.Core");
+            var perturbationType = Type.GetType("BugCam.Core.SimulationPerturbation, BugCam.Core");
+            var requestType = Type.GetType("BugCam.Core.SimulationRequest, BugCam.Core");
+            var resultType = Type.GetType("BugCam.Core.SimulationRunResult, BugCam.Core");
+            var harnessType = Type.GetType("BugCam.Core.SimulationHarness, BugCam.Core");
+
+            Assert.That(bodyType, Is.Not.Null);
+            Assert.That(perturbationType, Is.Not.Null);
+            Assert.That(requestType, Is.Not.Null);
+            Assert.That(resultType, Is.Not.Null);
+            Assert.That(harnessType, Is.Not.Null);
+
+            var bodyConstructor = bodyType.GetConstructor(new[]
+            {
+                typeof(int),
+                typeof(Vector3),
+                typeof(Quaternion),
+                typeof(Vector3),
+                typeof(float)
+            });
+            Assert.That(bodyConstructor, Is.Not.Null);
+
+            var body = bodyConstructor.Invoke(new object[]
+            {
+                1,
+                new Vector3(0f, 2f, 0f),
+                Quaternion.identity,
+                Vector3.one,
+                1f
+            });
+            var bodies = Array.CreateInstance(bodyType, 1);
+            bodies.SetValue(body, 0);
+
+            var requestConstructor = requestType.GetConstructor(new[]
+            {
+                bodyType.MakeArrayType(),
+                typeof(int),
+                perturbationType
+            });
+            Assert.That(requestConstructor, Is.Not.Null);
+
+            var request = requestConstructor.Invoke(new[]
+            {
+                bodies,
+                (object)1,
+                Activator.CreateInstance(perturbationType)
+            });
+            var runMethod = harnessType.GetMethod("Run", new[] { requestType });
+            Assert.That(runMethod, Is.Not.Null);
+
+            var sceneCountBefore = SceneManager.sceneCount;
+            var result = runMethod.Invoke(Activator.CreateInstance(harnessType), new[] { request });
+
+            Assert.That(
+                resultType.GetProperty("Succeeded")?.GetValue(result),
+                Is.EqualTo(false),
+                "SimulationHarness.Run must fail outside Play Mode.");
+            Assert.That(
+                resultType.GetProperty("ErrorReason")?.GetValue(result) as string,
+                Does.Contain("requires Play Mode"),
+                "The failure reason must name the Play Mode requirement explicitly.");
+            Assert.That(
+                SceneManager.sceneCount,
+                Is.EqualTo(sceneCountBefore),
+                "EditMode contract failure must not create a local Physics3D scene.");
+        }
+
+        [Test]
         public void CoreAssemblyExposesBlockOneSimulationContract()
         {
             var constantsType = Type.GetType("BugCam.Core.BugCamConstants, BugCam.Core");
@@ -46,16 +121,20 @@ namespace BugCam.Tests
                 "SimulationHarness.Run is the Block 1.1 entry point.");
         }
 
+        private static Type GetEditorType(string typeName)
+        {
+            return Type.GetType(typeName + ", BugCam.Editor") ??
+                   Type.GetType(typeName + ", Assembly-CSharp-Editor");
+        }
+
         [Test]
         public void EditorProbeReadsActualPhysicsThreadingMode()
         {
             var threadingModeType = Type.GetType(
                 "BugCam.Core.SimulationThreadingMode, BugCam.Core");
             var requestType = Type.GetType("BugCam.Core.SimulationRequest, BugCam.Core");
-            var settingsProbeType = Type.GetType(
-                "BugCam.Editor.PhysicsSettingsProbe, Assembly-CSharp-Editor");
-            var probeRunnerType = Type.GetType(
-                "BugCam.Editor.DeterminismProbeRunner, Assembly-CSharp-Editor");
+            var settingsProbeType = GetEditorType("BugCam.Editor.PhysicsSettingsProbe");
+            var probeRunnerType = GetEditorType("BugCam.Editor.DeterminismProbeRunner");
 
             Assert.That(settingsProbeType, Is.Not.Null, "The Editor settings probe must exist.");
             var readMethod = settingsProbeType.GetMethod("ReadThreadingMode", Type.EmptyTypes);
@@ -131,8 +210,7 @@ namespace BugCam.Tests
         [Test]
         public void TowerSceneGeneratorCreatesFortyEightCubeTowerAndProjectile()
         {
-            var generatorType = Type.GetType(
-                "BugCam.Editor.TowerSceneGenerator, Assembly-CSharp-Editor");
+            var generatorType = GetEditorType("BugCam.Editor.TowerSceneGenerator");
             Assert.That(
                 generatorType,
                 Is.Not.Null,
@@ -179,8 +257,7 @@ namespace BugCam.Tests
         [Test]
         public void TowerProbeRequestFactoryCreatesFortyNineBodyProjectileScenario()
         {
-            var factoryType = Type.GetType(
-                "BugCam.Editor.TowerProbeRequestFactory, Assembly-CSharp-Editor");
+            var factoryType = GetEditorType("BugCam.Editor.TowerProbeRequestFactory");
             Assert.That(factoryType, Is.Not.Null);
             var request = factoryType.GetMethod(
                 "CreateBaseline",
@@ -201,8 +278,7 @@ namespace BugCam.Tests
         [Test]
         public void TowerProbeRequestFactoryRecordsProjectilePerturbation()
         {
-            var factoryType = Type.GetType(
-                "BugCam.Editor.TowerProbeRequestFactory, Assembly-CSharp-Editor");
+            var factoryType = GetEditorType("BugCam.Editor.TowerProbeRequestFactory");
             var request = factoryType.GetMethod(
                 "CreatePerturbed",
                 BindingFlags.Static | BindingFlags.Public)?.Invoke(

@@ -3,7 +3,7 @@
 > Updated by the agent after every completed block. This file is the memory between sessions.
 
 ## Current position
-- Active block: 1.1 (waiting for Unity environment values from the human — manual steps 1–7)
+- Active block: 1.1 (harness + Play Mode lifecycle corrected; tower determinism measurement still outstanding)
 - Day 1 checkpoint: NOT PASSED
 - Day 2 checkpoint: NOT PASSED
 
@@ -13,14 +13,54 @@
 | docs | Spec contradictions resolved (11 items), git repo initialised | Review approved by human 2026-07-29 | `chore: docs + claude setup`, `docs: fix spec contradictions` |
 
 ## Open findings / blockers
-- Environment snapshot not yet recorded. Needed before `BugCamConstants` is written: exact Unity 6.3 version + Physics settings (Simulation Mode, Enhanced Determinism, **simulation threading mode — multi-threaded vs single-threaded**, Default Solver Iterations, Default Solver Velocity Iterations, Default Contact Offset, Sleep Threshold, Bounce Threshold, Default Max Angular Speed, Friction Type, Solver Type, Broadphase Type, Auto Sync Transforms, Reuse Collision Callbacks, Gravity) + Time.fixedTimestep. Repeatability claims are environment-scoped and meaningless without this snapshot.
-- OPEN: the exact API / settings name of the 6.3 physics threading switch is unknown and must not be guessed. It is read off the installed `6000.3.20f1` editor — Project Settings → Physics, cross-checked against that editor's Scripting API reference — and reported with the snapshot. Nothing in Block 1.1 references it by name until then.
+- Environment snapshot partially recorded from ProjectSettings (see Evidence log below). Full Block 1.1 A/B/A′ tower probe numbers (both threading modes, post-Editor-restart) are still missing — Day 1 checkpoint stays NOT PASSED.
 - OPEN (needs a human call): the fan `1.2 × threshold` can exceed the `EpsilonCeiling` of 10 mm when the threshold lands above 8.33 mm. Reporting a fan run from outside the tested range while the verdict says "within tested range" is exactly the kind of dishonest output `CLAUDE.md` forbids. Two candidate resolutions, neither chosen: clamp fan magnitudes to the ceiling and record the clamp in `RunResult`, or extend the tested range to `1.2 × ceiling` and say so in the verdict line.
 - OPEN (needs a human call): `.gitignore` line 21 excludes `*.csproj`, and the headless test csproj deferred to Block 1.3 is a hand-authored file that would therefore be silently untracked. Either force-add it (`!BugCam.Tests.csproj`) or generate it from a committed script.
 - OPEN (wording): `CLAUDE.md` line 33 says bitwise equality is "never used as the gate", while `PLAN.md` Block 1.4 VERIFY (a) makes bit-identical a hard pass condition. The two were reconciled in the 2026-07-29 decision below (1.4a is a determinism regression test, not the feature gate) but `CLAUDE.md` still reads as an absolute. One clarifying clause fixes it.
-- OPEN: whether a local `PhysicsScene` can be created and stepped outside Play Mode is unverified. It is answered by the first print of Block 1.1's probe (`physicsScene.IsValid()`), not from documentation. Play Mode is the sanctioned fallback (`PLAN.md` risk table).
+- RESOLVED (code path): local `PhysicsScene` via `SceneManager.CreateScene(..., LocalPhysicsMode.Physics3D)` requires Play Mode. Production harness now fails deterministically outside Play Mode; simulation tests live in `BugCam.Tests.PlayMode`. See Evidence log 2026-08-01.
+
+## Evidence log
+
+### 2026-08-01 — PhysicsScene test lifecycle (PR #1 / `fix/physics-scene-test`)
+
+**Old claim:** `PLAN.md` risk table said “Replay in Play Mode; harness in Edit Mode.” STATUS also listed local PhysicsScene outside Play Mode as OPEN/unverified.
+
+**New code evidence:**
+- `SimulationHarness.Run` returns `SimulationRunResult.Failure("SimulationHarness requires Play Mode because it creates an isolated local Physics3D scene.")` when `!Application.isPlaying`, before `SceneManager.CreateScene`.
+- Misleading `EditorSceneManager.NewScene` comment removed; comment now states the Play Mode isolation model.
+- Runtime simulation assertions remain in `BugCam.Tests.PlayMode` (not EditMode; no EnterPlayMode/ExitPlayMode).
+- EditMode adds `RunFailsDeterministicallyOutsidePlayModeWithoutCreatingLocalPhysicsScene`.
+- `BugCamTestAutomation`: `Library/BugCamTestResults.xml` renamed in docs/code to **LatestResultPath** semantics (most recent suite only); suite files remain `*.EditMode.xml` / `*.PlayMode.xml`; stale pending marker >30 min cleared on load; recovery request + Execute try/catch keep the Editor from sticking.
+
+**ProjectSettings snapshot (VERIFIED FACT from files on disk):**
+- Unity: `6000.3.21f1` (`ProjectSettings/ProjectVersion.txt`)
+- `m_SimulationMode: 2` (Script)
+- `m_ThreadingMode: 0` (MultiThreaded)
+- Solver iterations: 6 / velocity 1; gravity `(0, -9.81, 0)`; Auto Sync Transforms off
+- Fixed timestep from TimeManager: `2822399 / 141120000` ≈ `0.02` s
+
+**Prior local XML (REPORTED FACT — pre-fix timestamps, superseded):**
+- `Library/BugCamTestResults.EditMode.xml` — 7/7 Passed @ 2026-08-01 23:04:18Z
+- `Library/BugCamTestResults.PlayMode.xml` — 7/7 Passed @ 2026-08-01 23:07:08Z
+- `Library/BugCamTestResults.xml` SHA matched PlayMode only (CONTRADICTION with any “combined” naming)
+
+**Fresh test evidence (VERIFIED FACT — batchmode Unity `6000.3.21f1`, two Editor process restarts):**
+
+| Run | Suite | total | passed | failed | skipped | result | XML | log |
+|---|---|---|---|---|---|---|---|---|
+| 1 | EditMode | 8 | 8 | 0 | 0 | Passed | `Library/BugCamEvidence/EditMode.run1.xml` | `Library/BugCamEvidence/EditMode.run1.log` |
+| 1 | PlayMode | 7 | 7 | 0 | 0 | Passed | `Library/BugCamEvidence/PlayMode.run1.xml` | `Library/BugCamEvidence/PlayMode.run1.log` |
+| 2 (after full Editor exit) | EditMode | 8 | 8 | 0 | 0 | Passed | `Library/BugCamEvidence/EditMode.run2.xml` | `Library/BugCamEvidence/EditMode.run2.log` |
+| 2 (after full Editor exit) | PlayMode | 7 | 7 | 0 | 0 | Passed | `Library/BugCamEvidence/PlayMode.run2.xml` | `Library/BugCamEvidence/PlayMode.run2.log` |
+
+Canonical copies after run 2: `Library/BugCamTestResults.EditMode.xml`, `Library/BugCamTestResults.PlayMode.xml`, `Library/BugCamTestResults.xml` (= latest suite = PlayMode). Counts/outcomes identical across restart. Day 1 checkpoint remains NOT PASSED — unit tests ≠ Block 1.1 tower measurement.
+
+**Updated conclusion:** The EditMode/PlayMode lifecycle mismatch is the root cause of the PhysicsScene test failure class. Architecture is Play Mode for simulation; Edit Mode for contracts. PR #1 on `fix/physics-scene-test` carries the fix. Do not merge products with SceneSight.
+
+**Remaining open questions:** Block 1.1 dual-threading tower probe numbers; whether single-threaded mode will be measured in the same Editor session; allocation-zero assertion stability across GC/runtime variants.
 
 ## Decisions log
+- 2026-08-01 — Production `SimulationHarness` is Play Mode-only for local Physics3D scene creation. Edit Mode retains contract/reflection tests only. Obsolete “harness in Edit Mode” plan wording corrected. `BugCamTestResults.xml` documented as latest-suite copy, not a merged report.
 - 2026-07-30 — Document audit, bookkeeping only, no scope changes. Three fixes applied: (1) the `DivergenceSettings` contract in `PLAN.md` gained the epsilon-search and evidence numbers that Blocks 1.4/1.5/2.1 already specify — the contract's own rule ("no threshold may be referenced in `Core/` or `Evidence/` unless it exists in this contract") was violated by the plan itself in eleven places, which would have blocked the first commit of Block 1.4; values are transcribed from the plan text, none invented, and `BisectionIterations` is flagged as still carrying a 6–8 range instead of a single default. (2) The risk table said "20 runs × 250 steps", stale since the fan was fixed at 15 + baseline = 16. (3) `SPEC.md` §5 listed "active state" and "state mismatch" without the backlog asterisk although the ratified 14-float stride excludes them.
 - 2026-07-29 — Build target pinned to **Unity 6.3 LTS, editor `6000.3.20f1` or newer within 6.3**. Not 6.5. Reasons: (1) 6.3 LTS is supported until Dec 2027, while 6.5 is a rolling Supported release that stops receiving fixes once 6.6 ships — `6000.6.0b5` is already in beta, and 6.4 reached EOL in roughly six months; (2) the Unity version is part of the evidence, not an implementation detail — it goes into `environment.json` and into every environment-scoped PASS, so pinning a repeatability tool to a short-lived release is self-contradictory; (3) Asset Store buyers are predominantly on LTS.
 - 2026-07-29 — Unity 6.5 will be installed later as a **second** editor for cross-version ghosting experiments (Day 3+), never as the v0.1 build target.

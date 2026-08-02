@@ -22,9 +22,10 @@ Assets/BugCam/
 ├── Core/       SimulationHarness, StateRecorder, DivergenceEngine, EpsilonSearch
 ├── Evidence/   GhostRenderer, RetroPlayer, EvidenceCameras, Exporter
 ├── Editor/     BugCamWindow
-└── Tests/      TowerScene.unity (demo = test scene), EditMode tests
+└── Tests/      TowerScene.unity (demo = test scene), EditMode + PlayMode tests
 ```
-- Core must have zero dependencies on Evidence/ and Editor/. Core is testable headless.
+- Core must have zero dependencies on Evidence/ and Editor/. Core contract/reflection tests are EditMode; local `PhysicsScene` simulation requires Play Mode.
+- Production `SimulationHarness.Run` requires Play Mode because isolation uses `SceneManager.CreateScene` with `LocalPhysicsMode.Physics3D`. The old plan wording “harness in Edit Mode” is obsolete.
 - State storage: flat preallocated float arrays `[runs × steps × bodies × 14]`. Field order per body: `pos.x pos.y pos.z rot.x rot.y rot.z rot.w vel.x vel.y vel.z angVel.x angVel.y angVel.z sleeping(0f|1f)`. No per-frame allocations inside the simulate loop.
 - Contacts / collision-pair IDs / custom state (`SPEC.md §5`, marked `*`) are backlog — they are NOT part of the stride.
 - All lengths inside Core are metres. Millimetres exist only at the display layer.
@@ -43,7 +44,7 @@ Applies to every edit under `Assets/BugCam/Core/**`.
 
 - `Physics.simulationMode` must be Script before any `Simulate()` call; assert it in harness init.
 - Fixed step is a single constant `BugCamConstants.FixedStep = 0.02f`. Never pass `Time.deltaTime`.
-- One run = fresh local PhysicsScene created via `SceneManager.CreateScene` with `LocalPhysicsMode.Physics3D`. This is the default, not a fallback. Instantiate bodies in deterministic sorted order (by stable ID, not hierarchy order).
+- One run = fresh local PhysicsScene created via `SceneManager.CreateScene` with `LocalPhysicsMode.Physics3D` in Play Mode. This is the default, not a fallback. Instantiate bodies in deterministic sorted order (by stable ID, not hierarchy order). Outside Play Mode the harness returns a deterministic failure result — it does not attempt CreateScene.
 - No `Update`/`FixedUpdate` reliance inside harness runs — the loop drives everything explicitly.
 - No allocations inside the step loop: no LINQ, no closures, no string concat, no new arrays. Preallocate in Init.
 - All thresholds/weights live in one serializable `DivergenceSettings` asset — no magic numbers in engine code.
@@ -64,6 +65,8 @@ Applies to every edit under `Assets/BugCam/Core/**`.
 - Unity runs are executed by the human in the Editor unless batchmode CLI is set up; generate code + exact manual test steps, don't assume you can run Play Mode yourself.
 
 ## Testing
-- Core logic (DivergenceEngine math, EpsilonSearch bisection): plain C# unit tests, EditMode, no scene needed.
-- Simulation correctness: dedicated test scene `Assets/BugCam/Tests/TowerScene.unity`, asserted via harness, not eyeballed.
+- Editor / reflection / contract tests: `BugCam.Tests` (EditMode). Includes the deterministic Play Mode requirement failure for `SimulationHarness`.
+- Simulation and local `PhysicsScene` correctness: `BugCam.Tests.PlayMode` — fresh local Physics3D scenes, falling Rigidbody, 14-float state, stable IDs, perturbation, A/B/A-prime, cleanup. Do not move these back into EditMode; do not use EnterPlayMode/ExitPlayMode from the PlayMode assembly.
+- Tower demo scene: `Assets/BugCam/Tests/TowerScene.unity`, asserted via harness, not eyeballed.
 - Never mark a block done without its verification step from PLAN.md executed and result noted in STATUS.md.
+- Day 1 checkpoint remains NOT PASSED until Block 1.1 tower determinism measurements exist — passing unit tests alone is not that checkpoint.

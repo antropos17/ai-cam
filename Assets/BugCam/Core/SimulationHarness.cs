@@ -221,11 +221,17 @@ namespace BugCam.Core
                 }
             }
 
+            if (!Application.isPlaying)
+            {
+                return SimulationRunResult.Failure(
+                    "SimulationHarness requires Play Mode because it creates an isolated local Physics3D scene.");
+            }
+
             var simulationScene = default(Scene);
             try
             {
-                // LocalPhysicsMode scenes require Play Mode; Edit Mode must use
-                // EditorSceneManager.NewScene instead (not available in Core).
+                // This harness requires Play Mode because its isolation model depends on
+                // SceneManager.CreateScene with LocalPhysicsMode.Physics3D.
                 simulationScene = SceneManager.CreateScene(
                     "BugCam Simulation " + nextSceneId++,
                     new CreateSceneParameters(LocalPhysicsMode.Physics3D));

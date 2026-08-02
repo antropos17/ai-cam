@@ -12,11 +12,12 @@ One sentence: perturb initial state → rerun → measure divergence → prove i
 Based on the code under `Assets/BugCam/` (early Block 1.x):
 
 - Unity 6.3 URP project with a BugCam package layout (`Core`, `Editor`, `Tests`)
-- `SimulationHarness` — Script simulation mode, local `PhysicsScene`, fixed step `0.02s`, per-run scene recreation
+- `SimulationHarness` — Script simulation mode, local `PhysicsScene`, fixed step `0.02s`, per-run scene recreation; **requires Play Mode** (`SceneManager.CreateScene` + `LocalPhysicsMode.Physics3D`)
 - Determinism probe helpers and physics settings probe (Editor)
 - Procedural tower demo scene generator + `TowerScene.unity`
-- EditMode contract tests for the Core simulation API (reflection-based)
-- Editor automation hooks to run EditMode tests / export a tower preview on request files under `Library/`
+- EditMode contract/reflection tests (`BugCam.Tests`) including the deterministic outside-Play-Mode failure
+- PlayMode simulation tests (`BugCam.Tests.PlayMode`) for local Physics3D runs
+- Editor automation hooks to run EditMode/PlayMode suites / export a tower preview on request files under `Library/`
 
 Not implemented yet (planned in `docs/PLAN.md` / `docs/SPEC.md`): DivergenceEngine, adaptive epsilon search, ghost trajectories, retro cameras, MP4/evidence export, UTF flaky-test attribute, browser viewer, CI gate, attribution.
 
@@ -27,12 +28,16 @@ Assets/BugCam/
 ├── Core/       SimulationHarness, DeterminismProbe, BugCamConstants
 ├── Evidence/   (planned — GhostRenderer, RetroPlayer, EvidenceCameras, Exporter)
 ├── Editor/     Probes, tower scene generator, test automation
-└── Tests/      TowerScene.unity, EditMode contract tests
+└── Tests/
+    ├── EditMode/   BugCam.Tests — contracts, reflection, Editor generators
+    ├── PlayMode/   BugCam.Tests.PlayMode — SimulationHarness / local PhysicsScene
+    └── TowerScene.unity
 ```
 
 Rules from project docs:
 
 - `Core` must not depend on `Evidence` or `Editor`
+- Local Physics3D scene creation is a Play Mode runtime path; the old “harness in Edit Mode” statement is obsolete
 - State stride (planned): 14 floats per body per step — `pos, rot, vel, angVel, sleeping`
 - Lengths inside Core are metres; millimetres are display-only
 
@@ -44,7 +49,7 @@ Rules from project docs:
 | Language | C# |
 | Render pipeline | Universal Render Pipeline (URP) 17.3 |
 | Physics | Built-in 3D Physics (`Rigidbody` / `Collider`, local `PhysicsScene`) |
-| Tests | Unity Test Framework 1.6 (EditMode) |
+| Tests | Unity Test Framework 1.6 (EditMode + PlayMode) |
 | Editor tooling (optional) | [Unity MCP](https://github.com/CoplayDev/unity-mcp) via Package Manager git URL |
 
 No Docker, no Node/Python app server, no database.
@@ -90,14 +95,16 @@ Headless / batchmode:
 "<UnityEditor>\Unity.exe" -batchmode -nographics -projectPath "<repo>" -runTests -testPlatform PlayMode -testResults TestResults/PlayMode.xml -logFile - -quit
 ```
 
-Editor automation: write `Library/BugCamTest.request` with `all`, `editmode`, or `playmode`. Results land at `Library/BugCamTestResults.EditMode.xml`, `Library/BugCamTestResults.PlayMode.xml`, and `Library/BugCamTestResults.xml`.
+Editor automation: write `Library/BugCamTest.request` with `all`, `editmode`, or `playmode`. Suite results land at `Library/BugCamTestResults.EditMode.xml` and `Library/BugCamTestResults.PlayMode.xml`. `Library/BugCamTestResults.xml` is the **latest** completed suite only (not a merged combined report). Stale `Library/BugCamTest.playmode.pending` markers older than 30 minutes are cleared on Editor load; write `Library/BugCamTestRecovery.request` to force-reset a stuck run.
 
 Do not commit generated `Library/`, `Logs/`, or `TestResults/`.
 
 ## Tests
 
-- EditMode assembly: `BugCam.Tests` — reflection/contract and Editor generator tests
+- EditMode assembly: `BugCam.Tests` — reflection/contract and Editor generator tests (including Play Mode requirement for the harness)
 - PlayMode assembly: `BugCam.Tests.PlayMode` — `SimulationHarness` / local `PhysicsScene` runs
+
+PR #1 (`fix/physics-scene-test`) addresses the EditMode/PlayMode test-lifecycle mismatch for local PhysicsScene creation. Day 1 checkpoint remains **not passed** until Block 1.1 tower determinism measurements are recorded — unit-test green is not that checkpoint.
 
 There is no separate lint/typecheck toolchain outside the Unity compiler for this project.
 

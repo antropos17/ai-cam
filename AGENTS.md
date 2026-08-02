@@ -35,9 +35,9 @@ Assets/BugCam/
 - If identical runs do NOT match: recreate the entire PhysicsScene per run with identical instantiation order. If still divergent, record it as a finding (solver/order sensitivity), don't hide it.
 - Honest output is a feature: "STABLE WITHIN TESTED RANGE" is a valid, complete result. Never fake a fan.
 - Editor code guards: all Editor-only code under `#if UNITY_EDITOR` or in Editor/ asmdef.
-- Three production asmdefs: `BugCam.Core`, `BugCam.Evidence`, `BugCam.Editor`, plus one test-only `BugCam.Tests`. Keep compile times low.
+- Three production asmdefs: `BugCam.Core`, `BugCam.Evidence`, `BugCam.Editor`, plus test-only `BugCam.Tests` (EditMode) and `BugCam.Tests.PlayMode` (local PhysicsScene simulation). Keep compile times low.
 
-## Core physics rules (authoritative; also kept as a copy in `.Codex/rules/core-physics.md`)
+## Core physics rules (authoritative; also kept as a copy in `.claude/rules/core-physics.md`)
 
 Applies to every edit under `Assets/BugCam/Core/**`.
 
