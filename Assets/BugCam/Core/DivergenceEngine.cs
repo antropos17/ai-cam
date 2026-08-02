@@ -134,6 +134,21 @@ namespace BugCam.Core
                         baselineFrames[offset + 1] - perturbedFrames[offset + 1],
                         baselineFrames[offset + 2] - perturbedFrames[offset + 2]);
 
+                    if (!AreQuaternionComponentsFinite(
+                            baselineFrames[offset + 3],
+                            baselineFrames[offset + 4],
+                            baselineFrames[offset + 5],
+                            baselineFrames[offset + 6],
+                            perturbedFrames[offset + 3],
+                            perturbedFrames[offset + 4],
+                            perturbedFrames[offset + 5],
+                            perturbedFrames[offset + 6]))
+                    {
+                        return DivergenceResult.Failure(
+                            "Recorded state contains non-finite quaternion components; comparison aborted at step " +
+                            step + ", body " + bodyIndex + ".");
+                    }
+
                     var rotationErrorDegrees = QuaternionAngleDegrees(
                         baselineFrames[offset + 3],
                         baselineFrames[offset + 4],
@@ -410,6 +425,20 @@ namespace BugCam.Core
             return !float.IsNaN(value) && !float.IsInfinity(value);
         }
 
+        private static bool AreQuaternionComponentsFinite(
+            float ax,
+            float ay,
+            float az,
+            float aw,
+            float bx,
+            float by,
+            float bz,
+            float bw)
+        {
+            return IsFinite(ax) && IsFinite(ay) && IsFinite(az) && IsFinite(aw) &&
+                   IsFinite(bx) && IsFinite(by) && IsFinite(bz) && IsFinite(bw);
+        }
+
         private static float Magnitude(float x, float y, float z)
         {
             return Mathf.Sqrt((x * x) + (y * y) + (z * z));
@@ -417,6 +446,7 @@ namespace BugCam.Core
 
         /// <summary>
         /// Quaternion angular difference in degrees. Treats q and -q as identical.
+        /// Caller must ensure all eight components are finite before calling.
         /// </summary>
         private static float QuaternionAngleDegrees(
             float ax,
@@ -434,6 +464,7 @@ namespace BugCam.Core
                 dot = -dot;
             }
 
+            // Finite overshoot from floating-point noise only — never Inf→1→0°.
             if (dot > 1f)
             {
                 dot = 1f;

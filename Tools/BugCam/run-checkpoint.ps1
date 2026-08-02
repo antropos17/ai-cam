@@ -288,17 +288,29 @@ function Invoke-UnitySuite {
         $failed = [int]$run.failed
         $result = [string]$run.result
         Write-Host ("RESULT suite={0} total={1} passed={2} failed={3} result={4}" -f $Platform, $total, $passed, $failed, $result)
-        if ($failed -gt 0 -or $result -notlike "Passed*") {
+
+        # Suite passes only when: total>=1, failed==0, passed==total,
+        # result begins with Passed, and Unity exit code is 0. Empty suite is failure.
+        $suiteOk =
+            ($total -ge 1) -and
+            ($failed -eq 0) -and
+            ($passed -eq $total) -and
+            ($result.StartsWith("Passed")) -and
+            ($code -eq 0)
+
+        if (-not $suiteOk) {
+            if ($total -lt 1) {
+                Write-Host "ERROR: empty suite (total=$total) is not a pass"
+            }
+            elseif ($code -ne 0) {
+                Write-Host "ERROR: Unity exit code $code with result=$result"
+            }
             return 1
         }
     }
     catch {
         Write-Host "ERROR: failed to parse results XML: $($_.Exception.Message)"
         return 3
-    }
-
-    if ($code -ne 0) {
-        return $code
     }
 
     return 0

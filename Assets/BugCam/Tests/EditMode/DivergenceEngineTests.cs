@@ -145,6 +145,98 @@ namespace BugCam.Tests
         }
 
         [Test]
+        public void PositionCrossingWithoutSceneScoreCrossingIsNotSignificant()
+        {
+            // Position clearly above PerBodyPositionThreshold for SustainedSteps,
+            // while scene score stays at/below SceneScoreThreshold (WeightPosition=0).
+            // Fails if production drops the `sceneScore > SceneScoreThreshold` AND half.
+            const float positionGate = 0.01f;
+            const float scoreGate = 1f;
+            var thresholds = MakeThresholds(
+                perBodyPositionThreshold: positionGate,
+                perBodyRotationThreshold: 1f,
+                perBodyVelocityThreshold: 0.05f,
+                sceneScoreThreshold: scoreGate,
+                sustainedSteps: 5,
+                weightPosition: 0f,
+                weightRotation: 0f,
+                weightVelocity: 0f,
+                weightSleep: 0f);
+
+            var baseline = BuildFrames(10, 1, null);
+            var perturbed = BuildFrames(10, 1, (step, body, offset, buffer) =>
+            {
+                buffer[offset] = positionGate * 10f;
+            });
+
+            var result = Analyze(baseline, perturbed, 0.001f, thresholds);
+            Assert.That(Prop<bool>(result, "Succeeded"), Is.True, Prop<string>(result, "ErrorReason"));
+            Assert.That(Prop<float[]>(result, "SceneScorePerStep")[0], Is.EqualTo(0f).Within(1e-6f));
+            Assert.That(Prop<float>(result, "MaxSpreadMetres"), Is.GreaterThan(positionGate));
+            Assert.That(Prop<bool>(result, "HasSignificantDivergence"), Is.False);
+            Assert.That(Prop<int>(result, "FirstDivergenceFrame"), Is.EqualTo(-1));
+        }
+
+        [Test]
+        public void SceneScoreExactlyAtThresholdDoesNotQualify()
+        {
+            // Strict `>` : score == SceneScoreThreshold must not qualify.
+            var thresholds = MakeThresholds(
+                perBodyPositionThreshold: 0.01f,
+                perBodyRotationThreshold: 1f,
+                perBodyVelocityThreshold: 0.05f,
+                sceneScoreThreshold: 1f,
+                sustainedSteps: 5,
+                weightPosition: 1f,
+                weightRotation: 0f,
+                weightVelocity: 0f,
+                weightSleep: 0f);
+
+            var baseline = BuildFrames(10, 1, null);
+            var perturbed = BuildFrames(10, 1, (step, body, offset, buffer) =>
+            {
+                // |Δpos| = 1 m on 1 m scale ⇒ posNorm = 1 ⇒ score = 1 == threshold.
+                buffer[offset] = 1f;
+            });
+
+            var result = Analyze(baseline, perturbed, 0.001f, thresholds);
+            Assert.That(Prop<bool>(result, "Succeeded"), Is.True, Prop<string>(result, "ErrorReason"));
+            Assert.That(Prop<float[]>(result, "SceneScorePerStep")[0], Is.EqualTo(1f).Within(1e-5f));
+            Assert.That(Prop<bool>(result, "HasSignificantDivergence"), Is.False);
+            Assert.That(Prop<int>(result, "FirstDivergenceFrame"), Is.EqualTo(-1));
+        }
+
+        [Test]
+        public void PositionExactlyAtThresholdDoesNotQualify()
+        {
+            // Strict `>` : position == PerBodyPositionThreshold must not count as affected.
+            const float positionGate = 0.05f;
+            var thresholds = MakeThresholds(
+                perBodyPositionThreshold: positionGate,
+                perBodyRotationThreshold: 1f,
+                perBodyVelocityThreshold: 0.05f,
+                sceneScoreThreshold: 0.01f,
+                sustainedSteps: 5,
+                weightPosition: 1f,
+                weightRotation: 0f,
+                weightVelocity: 0f,
+                weightSleep: 0f);
+
+            var baseline = BuildFrames(10, 1, null);
+            var perturbed = BuildFrames(10, 1, (step, body, offset, buffer) =>
+            {
+                buffer[offset] = positionGate;
+            });
+
+            var result = Analyze(baseline, perturbed, 0.001f, thresholds);
+            Assert.That(Prop<bool>(result, "Succeeded"), Is.True, Prop<string>(result, "ErrorReason"));
+            Assert.That(Prop<float>(result, "MaxSpreadMetres"), Is.EqualTo(positionGate).Within(1e-6f));
+            Assert.That(Prop<bool>(result, "HasSignificantDivergence"), Is.False);
+            Assert.That(Prop<int[]>(result, "AffectedBodyIds"), Is.Empty);
+            Assert.That(Prop<int>(result, "FirstDivergenceFrame"), Is.EqualTo(-1));
+        }
+
+        [Test]
         public void RotationOnlyDifferenceCannotBypassPositionCondition()
         {
             var baseline = BuildFrames(10, 1, null);
@@ -203,6 +295,24 @@ namespace BugCam.Tests
             Assert.That(
                 Prop<float[]>(result, "SceneScorePerStep")[0],
                 Is.EqualTo(0f).Within(1e-5f));
+        }
+
+        [TestCase(float.NaN)]
+        [TestCase(float.PositiveInfinity)]
+        [TestCase(float.NegativeInfinity)]
+        public void NonFiniteQuaternionComponentReturnsStructuredFailure(float badComponent)
+        {
+            var baseline = BuildFrames(1, 1, null);
+            var perturbedFrames = (float[])baseline.Frames.Clone();
+            perturbedFrames[3] = badComponent;
+            var perturbed = new FrameBuffer(perturbedFrames, 1, 1);
+
+            var result = Analyze(baseline, perturbed, 0.001f);
+            Assert.That(Prop<bool>(result, "Succeeded"), Is.False);
+            Assert.That(Prop<string>(result, "ErrorReason"), Is.Not.Null.And.Not.Empty);
+            Assert.That(
+                Prop<string>(result, "ErrorReason"),
+                Does.Contain("non-finite").IgnoreCase);
         }
 
         [Test]
@@ -415,6 +525,60 @@ namespace BugCam.Tests
             UnityEngine.Object.DestroyImmediate((UnityEngine.Object)settings);
         }
 
+        [Test]
+        public void AnalyzeRunResultFailedBaselineReturnsStructuredFailure()
+        {
+            var failed = RunResultFailure("baseline boom");
+            var ok = RunResultSuccess(BuildFrames(2, 1, null), 0.001f, new[] { 1 });
+            var result = AnalyzeRunResults(failed, ok);
+            Assert.That(Prop<bool>(result, "Succeeded"), Is.False);
+            Assert.That(Prop<string>(result, "ErrorReason"), Does.Contain("Baseline"));
+        }
+
+        [Test]
+        public void AnalyzeRunResultFailedPerturbedReturnsStructuredFailure()
+        {
+            var ok = RunResultSuccess(BuildFrames(2, 1, null), 0.001f, new[] { 1 });
+            var failed = RunResultFailure("perturbed boom");
+            var result = AnalyzeRunResults(ok, failed);
+            Assert.That(Prop<bool>(result, "Succeeded"), Is.False);
+            Assert.That(Prop<string>(result, "ErrorReason"), Does.Contain("Perturbed"));
+        }
+
+        [Test]
+        public void AnalyzeRunResultMismatchedStepCountReturnsStructuredFailure()
+        {
+            var baseline = RunResultSuccess(BuildFrames(3, 1, null), 0.001f, new[] { 1 });
+            var perturbed = RunResultSuccess(BuildFrames(5, 1, null), 0.001f, new[] { 1 });
+            var result = AnalyzeRunResults(baseline, perturbed);
+            Assert.That(Prop<bool>(result, "Succeeded"), Is.False);
+            Assert.That(Prop<string>(result, "ErrorReason"), Does.Contain("steps").IgnoreCase);
+        }
+
+        [Test]
+        public void AnalyzeRunResultMismatchedBodyCountReturnsStructuredFailure()
+        {
+            var baseline = RunResultSuccess(BuildFrames(2, 1, null), 0.001f, new[] { 1 });
+            var perturbed = RunResultSuccess(BuildFrames(2, 2, null), 0.001f, new[] { 1, 2 });
+            var result = AnalyzeRunResults(baseline, perturbed);
+            Assert.That(Prop<bool>(result, "Succeeded"), Is.False);
+            Assert.That(Prop<string>(result, "ErrorReason"), Does.Contain("bodies").IgnoreCase);
+        }
+
+        [Test]
+        public void AnalyzeRunResultMismatchedStableBodyIdsReturnsStructuredFailure()
+        {
+            var frames = BuildFrames(2, 2, null);
+            var baseline = RunResultSuccess(frames, 0.001f, new[] { 10, 20 });
+            var perturbed = RunResultSuccess(
+                new FrameBuffer((float[])frames.Frames.Clone(), 2, 2),
+                0.002f,
+                new[] { 10, 99 });
+            var result = AnalyzeRunResults(baseline, perturbed);
+            Assert.That(Prop<bool>(result, "Succeeded"), Is.False);
+            Assert.That(Prop<string>(result, "ErrorReason"), Does.Contain("Stable body ids"));
+        }
+
         private static object Analyze(
             FrameBuffer baseline,
             FrameBuffer perturbed,
@@ -514,6 +678,82 @@ namespace BugCam.Tests
                 weightRotation,
                 weightVelocity,
                 weightSleep);
+        }
+
+        private static object AnalyzeRunResults(object baseline, object perturbed)
+        {
+            var engineType = Type.GetType("BugCam.Core.DivergenceEngine, BugCam.Core");
+            var runResultType = Type.GetType("BugCam.Core.RunResult, BugCam.Core");
+            var thresholdsType = Type.GetType("BugCam.Core.DivergenceThresholds, BugCam.Core");
+            Assert.That(engineType, Is.Not.Null);
+            Assert.That(runResultType, Is.Not.Null);
+
+            var method = engineType.GetMethod(
+                "Analyze",
+                new[]
+                {
+                    runResultType,
+                    runResultType,
+                    typeof(float[]),
+                    thresholdsType
+                });
+            Assert.That(method, Is.Not.Null);
+
+            return method.Invoke(
+                null,
+                new object[]
+                {
+                    baseline,
+                    perturbed,
+                    null,
+                    DefaultThresholds()
+                });
+        }
+
+        private static object RunResultFailure(string reason)
+        {
+            var runResultType = Type.GetType("BugCam.Core.RunResult, BugCam.Core");
+            Assert.That(runResultType, Is.Not.Null);
+            return runResultType.GetMethod("Failure").Invoke(null, new object[] { reason });
+        }
+
+        private static object RunResultSuccess(
+            FrameBuffer frames,
+            float epsilonMetres,
+            int[] stableBodyIds)
+        {
+            var runResultType = Type.GetType("BugCam.Core.RunResult, BugCam.Core");
+            var perturbationType = Type.GetType("BugCam.Core.SimulationPerturbation, BugCam.Core");
+            Assert.That(runResultType, Is.Not.Null);
+            Assert.That(perturbationType, Is.Not.Null);
+
+            var perturbation = Activator.CreateInstance(perturbationType);
+            var success = runResultType.GetMethod(
+                "Success",
+                new[]
+                {
+                    typeof(float[]),
+                    typeof(int[]),
+                    typeof(float),
+                    perturbationType,
+                    typeof(int),
+                    typeof(int),
+                    typeof(long)
+                });
+            Assert.That(success, Is.Not.Null);
+
+            return success.Invoke(
+                null,
+                new object[]
+                {
+                    frames.Frames,
+                    stableBodyIds,
+                    epsilonMetres,
+                    perturbation,
+                    frames.StepCount,
+                    0,
+                    0L
+                });
         }
 
         private static T Prop<T>(object target, string name)
