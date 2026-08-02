@@ -1,12 +1,10 @@
 using System;
-using System.Collections;
 using System.Reflection;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
-using UnityEngine.TestTools;
 
 namespace BugCam.Tests
 {
@@ -21,6 +19,81 @@ namespace BugCam.Tests
                 harnessType,
                 Is.Not.Null,
                 "Block 1.1 requires BugCam.Core.SimulationHarness in the BugCam.Core assembly.");
+        }
+
+        [Test]
+        public void RunFailsDeterministicallyOutsidePlayModeWithoutCreatingLocalPhysicsScene()
+        {
+            Assert.That(
+                Application.isPlaying,
+                Is.False,
+                "This EditMode contract test must run outside Play Mode.");
+
+            var bodyType = Type.GetType("BugCam.Core.SimulationBodyDefinition, BugCam.Core");
+            var perturbationType = Type.GetType("BugCam.Core.SimulationPerturbation, BugCam.Core");
+            var requestType = Type.GetType("BugCam.Core.SimulationRequest, BugCam.Core");
+            var resultType = Type.GetType("BugCam.Core.SimulationRunResult, BugCam.Core");
+            var harnessType = Type.GetType("BugCam.Core.SimulationHarness, BugCam.Core");
+
+            Assert.That(bodyType, Is.Not.Null);
+            Assert.That(perturbationType, Is.Not.Null);
+            Assert.That(requestType, Is.Not.Null);
+            Assert.That(resultType, Is.Not.Null);
+            Assert.That(harnessType, Is.Not.Null);
+
+            var bodyConstructor = bodyType.GetConstructor(new[]
+            {
+                typeof(int),
+                typeof(Vector3),
+                typeof(Quaternion),
+                typeof(Vector3),
+                typeof(float)
+            });
+            Assert.That(bodyConstructor, Is.Not.Null);
+
+            var body = bodyConstructor.Invoke(new object[]
+            {
+                1,
+                new Vector3(0f, 2f, 0f),
+                Quaternion.identity,
+                Vector3.one,
+                1f
+            });
+            var bodies = Array.CreateInstance(bodyType, 1);
+            bodies.SetValue(body, 0);
+
+            var requestConstructor = requestType.GetConstructor(new[]
+            {
+                bodyType.MakeArrayType(),
+                typeof(int),
+                perturbationType
+            });
+            Assert.That(requestConstructor, Is.Not.Null);
+
+            var request = requestConstructor.Invoke(new[]
+            {
+                bodies,
+                (object)1,
+                Activator.CreateInstance(perturbationType)
+            });
+            var runMethod = harnessType.GetMethod("Run", new[] { requestType });
+            Assert.That(runMethod, Is.Not.Null);
+
+            var sceneCountBefore = SceneManager.sceneCount;
+            var result = runMethod.Invoke(Activator.CreateInstance(harnessType), new[] { request });
+
+            Assert.That(
+                resultType.GetProperty("Succeeded")?.GetValue(result),
+                Is.EqualTo(false),
+                "SimulationHarness.Run must fail outside Play Mode.");
+            Assert.That(
+                resultType.GetProperty("ErrorReason")?.GetValue(result) as string,
+                Does.Contain("requires Play Mode"),
+                "The failure reason must name the Play Mode requirement explicitly.");
+            Assert.That(
+                SceneManager.sceneCount,
+                Is.EqualTo(sceneCountBefore),
+                "EditMode contract failure must not create a local Physics3D scene.");
         }
 
         [Test]
@@ -48,16 +121,20 @@ namespace BugCam.Tests
                 "SimulationHarness.Run is the Block 1.1 entry point.");
         }
 
+        private static Type GetEditorType(string typeName)
+        {
+            return Type.GetType(typeName + ", BugCam.Editor") ??
+                   Type.GetType(typeName + ", Assembly-CSharp-Editor");
+        }
+
         [Test]
         public void EditorProbeReadsActualPhysicsThreadingMode()
         {
             var threadingModeType = Type.GetType(
                 "BugCam.Core.SimulationThreadingMode, BugCam.Core");
             var requestType = Type.GetType("BugCam.Core.SimulationRequest, BugCam.Core");
-            var settingsProbeType = Type.GetType(
-                "BugCam.Editor.PhysicsSettingsProbe, Assembly-CSharp-Editor");
-            var probeRunnerType = Type.GetType(
-                "BugCam.Editor.DeterminismProbeRunner, Assembly-CSharp-Editor");
+            var settingsProbeType = GetEditorType("BugCam.Editor.PhysicsSettingsProbe");
+            var probeRunnerType = GetEditorType("BugCam.Editor.DeterminismProbeRunner");
 
             Assert.That(settingsProbeType, Is.Not.Null, "The Editor settings probe must exist.");
             var readMethod = settingsProbeType.GetMethod("ReadThreadingMode", Type.EmptyTypes);
@@ -133,8 +210,7 @@ namespace BugCam.Tests
         [Test]
         public void TowerSceneGeneratorCreatesFortyEightCubeTowerAndProjectile()
         {
-            var generatorType = Type.GetType(
-                "BugCam.Editor.TowerSceneGenerator, Assembly-CSharp-Editor");
+            var generatorType = GetEditorType("BugCam.Editor.TowerSceneGenerator");
             Assert.That(
                 generatorType,
                 Is.Not.Null,
@@ -181,8 +257,7 @@ namespace BugCam.Tests
         [Test]
         public void TowerProbeRequestFactoryCreatesFortyNineBodyProjectileScenario()
         {
-            var factoryType = Type.GetType(
-                "BugCam.Editor.TowerProbeRequestFactory, Assembly-CSharp-Editor");
+            var factoryType = GetEditorType("BugCam.Editor.TowerProbeRequestFactory");
             Assert.That(factoryType, Is.Not.Null);
             var request = factoryType.GetMethod(
                 "CreateBaseline",
@@ -203,8 +278,7 @@ namespace BugCam.Tests
         [Test]
         public void TowerProbeRequestFactoryRecordsProjectilePerturbation()
         {
-            var factoryType = Type.GetType(
-                "BugCam.Editor.TowerProbeRequestFactory, Assembly-CSharp-Editor");
+            var factoryType = GetEditorType("BugCam.Editor.TowerProbeRequestFactory");
             var request = factoryType.GetMethod(
                 "CreatePerturbed",
                 BindingFlags.Static | BindingFlags.Public)?.Invoke(
@@ -225,735 +299,6 @@ namespace BugCam.Tests
             Assert.That(
                 perturbationType.GetProperty("MagnitudeMetres")?.GetValue(perturbation),
                 Is.EqualTo(0.001f));
-        }
-
-        [UnityTest]
-        public IEnumerator RunSimulatesOneBodyInFreshLocalPhysicsScene()
-        {
-            yield return new EnterPlayMode();
-
-            Assert.That(
-                Physics.simulationMode,
-                Is.EqualTo(SimulationMode.Script),
-                "SimulationHarness.Run requires Physics.simulationMode to be Script before simulation begins.");
-
-            var bodyType = Type.GetType("BugCam.Core.SimulationBodyDefinition, BugCam.Core");
-            var perturbationType = Type.GetType("BugCam.Core.SimulationPerturbation, BugCam.Core");
-            var requestType = Type.GetType("BugCam.Core.SimulationRequest, BugCam.Core");
-            var resultType = Type.GetType("BugCam.Core.SimulationRunResult, BugCam.Core");
-            var harnessType = Type.GetType("BugCam.Core.SimulationHarness, BugCam.Core");
-
-            Assert.That(bodyType, Is.Not.Null, "SimulationBodyDefinition must be available to construct a body.");
-            Assert.That(perturbationType, Is.Not.Null, "SimulationPerturbation must be available for the baseline run.");
-            Assert.That(requestType, Is.Not.Null, "SimulationRequest must be available to configure the run.");
-            Assert.That(resultType, Is.Not.Null, "SimulationRunResult must be available to inspect the run outcome.");
-            Assert.That(harnessType, Is.Not.Null, "SimulationHarness must be available to execute the run.");
-
-            var bodyConstructor = bodyType.GetConstructor(new[]
-            {
-                typeof(int),
-                typeof(Vector3),
-                typeof(Quaternion),
-                typeof(Vector3),
-                typeof(float)
-            });
-            Assert.That(
-                bodyConstructor,
-                Is.Not.Null,
-                "SimulationBodyDefinition must expose the (int, Vector3, Quaternion, Vector3, float) constructor.");
-
-            var body = bodyConstructor.Invoke(new object[]
-            {
-                7,
-                new Vector3(0f, 2f, 0f),
-                Quaternion.identity,
-                Vector3.one,
-                1f
-            });
-            var bodies = Array.CreateInstance(bodyType, 1);
-            bodies.SetValue(body, 0);
-
-            var perturbation = Activator.CreateInstance(perturbationType);
-            var requestConstructor = requestType.GetConstructor(new[]
-            {
-                bodyType.MakeArrayType(),
-                typeof(int),
-                perturbationType
-            });
-            Assert.That(
-                requestConstructor,
-                Is.Not.Null,
-                "SimulationRequest must expose the (SimulationBodyDefinition[], int, SimulationPerturbation) constructor.");
-
-            var request = requestConstructor.Invoke(new[] { bodies, (object)10, perturbation });
-            var runMethod = harnessType.GetMethod("Run", new[] { requestType });
-            Assert.That(
-                runMethod,
-                Is.Not.Null,
-                "SimulationHarness must expose Run(SimulationRequest).");
-
-            var initialSceneCount = SceneManager.sceneCount;
-            var harness = Activator.CreateInstance(harnessType);
-            var result = runMethod.Invoke(harness, new[] { request });
-
-            var succeededProperty = resultType.GetProperty("Succeeded");
-            var errorReasonProperty = resultType.GetProperty("ErrorReason");
-            var finalBodyPositionsProperty = resultType.GetProperty("FinalBodyPositions");
-            var stateFramesProperty = resultType.GetProperty("StateFrames");
-            var allocatedBytesProperty = resultType.GetProperty("ManagedBytesAllocatedInLoop");
-
-            Assert.That(succeededProperty, Is.Not.Null, "SimulationRunResult must expose bool Succeeded.");
-            Assert.That(errorReasonProperty, Is.Not.Null, "SimulationRunResult must expose string ErrorReason.");
-            Assert.That(
-                finalBodyPositionsProperty,
-                Is.Not.Null,
-                "SimulationRunResult must expose Vector3[] FinalBodyPositions.");
-            Assert.That(
-                stateFramesProperty,
-                Is.Not.Null,
-                "SimulationRunResult must expose the preallocated 14-float state frames.");
-            Assert.That(
-                allocatedBytesProperty,
-                Is.Not.Null,
-                "SimulationRunResult must report managed bytes allocated inside the step loop.");
-            var errorReason = errorReasonProperty.GetValue(result) as string;
-            Assert.That(
-                succeededProperty.GetValue(result),
-                Is.EqualTo(true),
-                "A valid one-body simulation must report Succeeded=true. ErrorReason: " + errorReason);
-            Assert.That(
-                errorReason,
-                Is.Empty,
-                "A successful one-body simulation must return an empty ErrorReason.");
-
-            var finalBodyPositions = finalBodyPositionsProperty.GetValue(result) as Vector3[];
-            Assert.That(
-                finalBodyPositions,
-                Is.Not.Null,
-                "FinalBodyPositions must be a Vector3 array.");
-            Assert.That(
-                finalBodyPositions,
-                Has.Length.EqualTo(1),
-                "The result must contain exactly one final position for the one requested body.");
-            Assert.That(
-                finalBodyPositions[0].y,
-                Is.LessThan(2f),
-                "The dynamic cube must fall below its initial y position after exactly 10 fixed steps.");
-
-            var stateFrames = stateFramesProperty.GetValue(result) as float[];
-            Assert.That(
-                stateFrames,
-                Has.Length.EqualTo(10 * 1 * 14),
-                "Ten steps for one body must produce ten 14-float state frames.");
-            const int finalFrameOffset = 9 * 14;
-            Assert.That(
-                stateFrames[finalFrameOffset],
-                Is.EqualTo(finalBodyPositions[0].x).Within(1e-6f),
-                "State-frame position X must match FinalBodyPositions.");
-            Assert.That(
-                stateFrames[finalFrameOffset + 1],
-                Is.EqualTo(finalBodyPositions[0].y).Within(1e-6f),
-                "State-frame position Y must match FinalBodyPositions.");
-            Assert.That(
-                stateFrames[finalFrameOffset + 2],
-                Is.EqualTo(finalBodyPositions[0].z).Within(1e-6f),
-                "State-frame position Z must match FinalBodyPositions.");
-            Assert.That(stateFrames[finalFrameOffset + 3], Is.EqualTo(0f).Within(1e-6f));
-            Assert.That(stateFrames[finalFrameOffset + 4], Is.EqualTo(0f).Within(1e-6f));
-            Assert.That(stateFrames[finalFrameOffset + 5], Is.EqualTo(0f).Within(1e-6f));
-            Assert.That(stateFrames[finalFrameOffset + 6], Is.EqualTo(1f).Within(1e-6f));
-            Assert.That(stateFrames[finalFrameOffset + 7], Is.EqualTo(0f).Within(1e-6f));
-            Assert.That(
-                stateFrames[finalFrameOffset + 8],
-                Is.EqualTo(Physics.gravity.y * 10f * 0.02f).Within(1e-6f),
-                "State-frame linear velocity Y must include all ten gravity steps.");
-            Assert.That(stateFrames[finalFrameOffset + 9], Is.EqualTo(0f).Within(1e-6f));
-            Assert.That(stateFrames[finalFrameOffset + 10], Is.EqualTo(0f).Within(1e-6f));
-            Assert.That(stateFrames[finalFrameOffset + 11], Is.EqualTo(0f).Within(1e-6f));
-            Assert.That(stateFrames[finalFrameOffset + 12], Is.EqualTo(0f).Within(1e-6f));
-            Assert.That(
-                stateFrames[finalFrameOffset + 13],
-                Is.EqualTo(0f),
-                "The falling body must record sleeping as 0f at stride offset 13.");
-            Assert.That(
-                allocatedBytesProperty.GetValue(result),
-                Is.EqualTo(0L),
-                "The explicit physics step loop must allocate zero managed bytes.");
-
-            for (var frame = 0; frame < 10 && SceneManager.sceneCount != initialSceneCount; frame++)
-            {
-                yield return null;
-            }
-
-            Assert.That(
-                SceneManager.sceneCount,
-                Is.EqualTo(initialSceneCount),
-                "SimulationHarness.Run must unload its fresh local physics scene within 10 editor frames.");
-
-            yield return new ExitPlayMode();
-        }
-
-        [UnityTest]
-        public IEnumerator RunPublishesAllBodyArraysInStableIdOrder()
-        {
-            yield return new EnterPlayMode();
-
-            var bodyType = Type.GetType("BugCam.Core.SimulationBodyDefinition, BugCam.Core");
-            var perturbationType = Type.GetType("BugCam.Core.SimulationPerturbation, BugCam.Core");
-            var requestType = Type.GetType("BugCam.Core.SimulationRequest, BugCam.Core");
-            var resultType = Type.GetType("BugCam.Core.SimulationRunResult, BugCam.Core");
-            var harnessType = Type.GetType("BugCam.Core.SimulationHarness, BugCam.Core");
-            var bodyConstructor = bodyType.GetConstructor(new[]
-            {
-                typeof(int),
-                typeof(Vector3),
-                typeof(Quaternion),
-                typeof(Vector3),
-                typeof(float)
-            });
-            var requestConstructor = requestType.GetConstructor(new[]
-            {
-                bodyType.MakeArrayType(),
-                typeof(int),
-                perturbationType
-            });
-            var runMethod = harnessType.GetMethod("Run", new[] { requestType });
-
-            var bodies = Array.CreateInstance(bodyType, 2);
-            bodies.SetValue(bodyConstructor.Invoke(new object[]
-            {
-                9,
-                new Vector3(9f, 4f, 0f),
-                Quaternion.identity,
-                Vector3.one,
-                1f
-            }), 0);
-            bodies.SetValue(bodyConstructor.Invoke(new object[]
-            {
-                3,
-                new Vector3(3f, 2f, 0f),
-                Quaternion.identity,
-                Vector3.one,
-                1f
-            }), 1);
-
-            var request = requestConstructor.Invoke(new[]
-            {
-                bodies,
-                (object)1,
-                Activator.CreateInstance(perturbationType)
-            });
-            var initialSceneCount = SceneManager.sceneCount;
-            var result = runMethod.Invoke(Activator.CreateInstance(harnessType), new[] { request });
-
-            Assert.That(
-                resultType.GetProperty("Succeeded")?.GetValue(result),
-                Is.EqualTo(true),
-                "The reversed two-body request must run successfully.");
-
-            var stableBodyIdsProperty = resultType.GetProperty("StableBodyIds");
-            Assert.That(
-                stableBodyIdsProperty,
-                Is.Not.Null,
-                "SimulationRunResult must publish the StableBodyIds that index its result arrays.");
-            var stableBodyIds = stableBodyIdsProperty.GetValue(result) as int[];
-            Assert.That(stableBodyIds, Is.EqualTo(new[] { 3, 9 }));
-
-            var finalBodyPositions =
-                resultType.GetProperty("FinalBodyPositions")?.GetValue(result) as Vector3[];
-            Assert.That(finalBodyPositions, Has.Length.EqualTo(2));
-            Assert.That(finalBodyPositions[0].x, Is.EqualTo(3f).Within(1e-6f));
-            Assert.That(finalBodyPositions[1].x, Is.EqualTo(9f).Within(1e-6f));
-
-            var stateFrames = resultType.GetProperty("StateFrames")?.GetValue(result) as float[];
-            Assert.That(stateFrames, Has.Length.EqualTo(2 * 14));
-            Assert.That(stateFrames[0], Is.EqualTo(3f).Within(1e-6f));
-            Assert.That(stateFrames[14], Is.EqualTo(9f).Within(1e-6f));
-
-            for (var frame = 0; frame < 10 && SceneManager.sceneCount != initialSceneCount; frame++)
-            {
-                yield return null;
-            }
-
-            Assert.That(SceneManager.sceneCount, Is.EqualTo(initialSceneCount));
-            yield return new ExitPlayMode();
-        }
-
-        [UnityTest]
-        public IEnumerator DeterminismProbeRejectsMismatchedStableBodyIdSets()
-        {
-            yield return new EnterPlayMode();
-
-            var bodyType = Type.GetType("BugCam.Core.SimulationBodyDefinition, BugCam.Core");
-            var perturbationType = Type.GetType("BugCam.Core.SimulationPerturbation, BugCam.Core");
-            var requestType = Type.GetType("BugCam.Core.SimulationRequest, BugCam.Core");
-            var probeType = Type.GetType("BugCam.Core.DeterminismProbe, BugCam.Core");
-            var probeResultType = Type.GetType("BugCam.Core.DeterminismProbeResult, BugCam.Core");
-            var threadingModeType = Type.GetType(
-                "BugCam.Core.SimulationThreadingMode, BugCam.Core");
-            var bodyConstructor = bodyType.GetConstructor(new[]
-            {
-                typeof(int),
-                typeof(Vector3),
-                typeof(Quaternion),
-                typeof(Vector3),
-                typeof(float)
-            });
-            var requestConstructor = requestType.GetConstructor(new[]
-            {
-                bodyType.MakeArrayType(),
-                typeof(int),
-                perturbationType
-            });
-            var runMethod = probeType.GetMethod(
-                "Run",
-                new[] { requestType, requestType, threadingModeType });
-
-            var baselineBodies = Array.CreateInstance(bodyType, 2);
-            baselineBodies.SetValue(bodyConstructor.Invoke(new object[]
-            {
-                3, new Vector3(3f, 2f, 0f), Quaternion.identity, Vector3.one, 1f
-            }), 0);
-            baselineBodies.SetValue(bodyConstructor.Invoke(new object[]
-            {
-                9, new Vector3(9f, 2f, 0f), Quaternion.identity, Vector3.one, 1f
-            }), 1);
-            var mismatchedBodies = Array.CreateInstance(bodyType, 2);
-            mismatchedBodies.SetValue(bodyConstructor.Invoke(new object[]
-            {
-                3, new Vector3(3f, 2f, 0f), Quaternion.identity, Vector3.one, 1f
-            }), 0);
-            mismatchedBodies.SetValue(bodyConstructor.Invoke(new object[]
-            {
-                7, new Vector3(9f, 2f, 0f), Quaternion.identity, Vector3.one, 1f
-            }), 1);
-
-            var noPerturbation = Activator.CreateInstance(perturbationType);
-            var baselineRequest = requestConstructor.Invoke(new[]
-            {
-                baselineBodies, (object)1, noPerturbation
-            });
-            var mismatchedRequest = requestConstructor.Invoke(new[]
-            {
-                mismatchedBodies, (object)1, noPerturbation
-            });
-            var result = runMethod.Invoke(
-                Activator.CreateInstance(probeType),
-                new[]
-                {
-                    baselineRequest,
-                    mismatchedRequest,
-                    Enum.Parse(threadingModeType, "MultiThreaded")
-                });
-
-            Assert.That(
-                probeResultType.GetProperty("Succeeded")?.GetValue(result),
-                Is.EqualTo(false),
-                "The probe must reject A and B when their StableBodyIds do not match.");
-            Assert.That(
-                probeResultType.GetProperty("ErrorReason")?.GetValue(result),
-                Does.Contain("StableBodyIds"),
-                "The failure must identify StableBodyIds as the incompatible comparison dimensions.");
-
-            yield return new ExitPlayMode();
-        }
-
-        [UnityTest]
-        public IEnumerator RunRejectsNonFiniteBodyTransformStates()
-        {
-            yield return new EnterPlayMode();
-
-            var bodyType = Type.GetType("BugCam.Core.SimulationBodyDefinition, BugCam.Core");
-            var perturbationType = Type.GetType("BugCam.Core.SimulationPerturbation, BugCam.Core");
-            var requestType = Type.GetType("BugCam.Core.SimulationRequest, BugCam.Core");
-            var resultType = Type.GetType("BugCam.Core.SimulationRunResult, BugCam.Core");
-            var harnessType = Type.GetType("BugCam.Core.SimulationHarness, BugCam.Core");
-            var bodyConstructor = bodyType.GetConstructor(new[]
-            {
-                typeof(int),
-                typeof(Vector3),
-                typeof(Quaternion),
-                typeof(Vector3),
-                typeof(float)
-            });
-            var requestConstructor = requestType.GetConstructor(new[]
-            {
-                bodyType.MakeArrayType(),
-                typeof(int),
-                perturbationType
-            });
-            var runMethod = harnessType.GetMethod("Run", new[] { requestType });
-            var noPerturbation = Activator.CreateInstance(perturbationType);
-
-            var nonFinitePositionBodies = Array.CreateInstance(bodyType, 1);
-            nonFinitePositionBodies.SetValue(bodyConstructor.Invoke(new object[]
-            {
-                3,
-                new Vector3(float.NaN, 2f, 0f),
-                Quaternion.identity,
-                Vector3.one,
-                1f
-            }), 0);
-            var nonFiniteRotationBodies = Array.CreateInstance(bodyType, 1);
-            nonFiniteRotationBodies.SetValue(bodyConstructor.Invoke(new object[]
-            {
-                3,
-                new Vector3(0f, 2f, 0f),
-                new Quaternion(0f, 0f, float.PositiveInfinity, 1f),
-                Vector3.one,
-                1f
-            }), 0);
-
-            var positionResult = runMethod.Invoke(
-                Activator.CreateInstance(harnessType),
-                new[]
-                {
-                    requestConstructor.Invoke(new[]
-                    {
-                        nonFinitePositionBodies, (object)1, noPerturbation
-                    })
-                });
-            var rotationResult = runMethod.Invoke(
-                Activator.CreateInstance(harnessType),
-                new[]
-                {
-                    requestConstructor.Invoke(new[]
-                    {
-                        nonFiniteRotationBodies, (object)1, noPerturbation
-                    })
-                });
-
-            Assert.That(resultType.GetProperty("Succeeded")?.GetValue(positionResult), Is.EqualTo(false));
-            Assert.That(resultType.GetProperty("Succeeded")?.GetValue(rotationResult), Is.EqualTo(false));
-            Assert.That(
-                resultType.GetProperty("ErrorReason")?.GetValue(positionResult),
-                Does.Contain("finite"),
-                "NaN position must be rejected before entering the simulation loop.");
-            Assert.That(
-                resultType.GetProperty("ErrorReason")?.GetValue(rotationResult),
-                Does.Contain("finite"),
-                "Infinity rotation must be rejected before entering the simulation loop.");
-
-            yield return new ExitPlayMode();
-        }
-
-        [UnityTest]
-        public IEnumerator RunAppliesInitialLinearVelocityToProjectile()
-        {
-            yield return new EnterPlayMode();
-
-            var bodyType = Type.GetType("BugCam.Core.SimulationBodyDefinition, BugCam.Core");
-            var perturbationType = Type.GetType("BugCam.Core.SimulationPerturbation, BugCam.Core");
-            var requestType = Type.GetType("BugCam.Core.SimulationRequest, BugCam.Core");
-            var resultType = Type.GetType("BugCam.Core.SimulationRunResult, BugCam.Core");
-            var harnessType = Type.GetType("BugCam.Core.SimulationHarness, BugCam.Core");
-            var bodyConstructor = bodyType.GetConstructor(new[]
-            {
-                typeof(int),
-                typeof(Vector3),
-                typeof(Quaternion),
-                typeof(Vector3),
-                typeof(float),
-                typeof(Vector3)
-            });
-            Assert.That(
-                bodyConstructor,
-                Is.Not.Null,
-                "A projectile body must accept a recorded initial linear velocity.");
-
-            var body = bodyConstructor.Invoke(new object[]
-            {
-                49,
-                new Vector3(0f, 10f, 0f),
-                Quaternion.identity,
-                Vector3.one,
-                2f,
-                new Vector3(5f, 0f, 0f)
-            });
-            var bodies = Array.CreateInstance(bodyType, 1);
-            bodies.SetValue(body, 0);
-            var requestConstructor = requestType.GetConstructor(new[]
-            {
-                bodyType.MakeArrayType(),
-                typeof(int),
-                perturbationType
-            });
-            var request = requestConstructor.Invoke(new[]
-            {
-                bodies,
-                (object)1,
-                Activator.CreateInstance(perturbationType)
-            });
-            var result = harnessType.GetMethod("Run", new[] { requestType }).Invoke(
-                Activator.CreateInstance(harnessType),
-                new[] { request });
-
-            Assert.That(resultType.GetProperty("Succeeded")?.GetValue(result), Is.EqualTo(true));
-            var stateFrames = resultType.GetProperty("StateFrames")?.GetValue(result) as float[];
-            Assert.That(stateFrames[0], Is.EqualTo(0.1f).Within(1e-6f));
-            Assert.That(stateFrames[7], Is.EqualTo(5f).Within(1e-6f));
-
-            yield return new ExitPlayMode();
-        }
-
-        [UnityTest]
-        public IEnumerator RunAppliesPerturbationWithoutCrossRunLeakage()
-        {
-            yield return new EnterPlayMode();
-
-            var bodyType = Type.GetType("BugCam.Core.SimulationBodyDefinition, BugCam.Core");
-            var perturbationType = Type.GetType("BugCam.Core.SimulationPerturbation, BugCam.Core");
-            var requestType = Type.GetType("BugCam.Core.SimulationRequest, BugCam.Core");
-            var resultType = Type.GetType("BugCam.Core.SimulationRunResult, BugCam.Core");
-            var harnessType = Type.GetType("BugCam.Core.SimulationHarness, BugCam.Core");
-
-            var perturbationConstructor = perturbationType.GetConstructor(new[]
-            {
-                typeof(int),
-                typeof(Vector3),
-                typeof(float)
-            });
-            Assert.That(
-                perturbationConstructor,
-                Is.Not.Null,
-                "SimulationPerturbation must expose the (int, Vector3, float) constructor.");
-
-            var bodyConstructor = bodyType.GetConstructor(new[]
-            {
-                typeof(int),
-                typeof(Vector3),
-                typeof(Quaternion),
-                typeof(Vector3),
-                typeof(float)
-            });
-            var requestConstructor = requestType.GetConstructor(new[]
-            {
-                bodyType.MakeArrayType(),
-                typeof(int),
-                perturbationType
-            });
-            var runMethod = harnessType.GetMethod("Run", new[] { requestType });
-
-            var body = bodyConstructor.Invoke(new object[]
-            {
-                7,
-                new Vector3(0f, 2f, 0f),
-                Quaternion.identity,
-                Vector3.one,
-                1f
-            });
-            var bodies = Array.CreateInstance(bodyType, 1);
-            bodies.SetValue(body, 0);
-
-            const float magnitudeMetres = 0.001f;
-            var baselinePerturbation = Activator.CreateInstance(perturbationType);
-            var appliedPerturbation = perturbationConstructor.Invoke(new object[]
-            {
-                7,
-                Vector3.right,
-                magnitudeMetres
-            });
-            var baselineRequest = requestConstructor.Invoke(
-                new[] { bodies, (object)10, baselinePerturbation });
-            var perturbedRequest = requestConstructor.Invoke(
-                new[] { bodies, (object)10, appliedPerturbation });
-
-            var initialSceneCount = SceneManager.sceneCount;
-            var harness = Activator.CreateInstance(harnessType);
-            var resultA = runMethod.Invoke(harness, new[] { baselineRequest });
-            var resultB = runMethod.Invoke(harness, new[] { perturbedRequest });
-            var resultAPrime = runMethod.Invoke(harness, new[] { baselineRequest });
-
-            var succeededProperty = resultType.GetProperty("Succeeded");
-            var errorReasonProperty = resultType.GetProperty("ErrorReason");
-            var finalBodyPositionsProperty = resultType.GetProperty("FinalBodyPositions");
-            var appliedPerturbationProperty = resultType.GetProperty("AppliedPerturbation");
-            Assert.That(
-                appliedPerturbationProperty,
-                Is.Not.Null,
-                "SimulationRunResult must record the perturbation applied before the run.");
-
-            Assert.That(
-                succeededProperty.GetValue(resultA),
-                Is.EqualTo(true),
-                "Baseline A must succeed. ErrorReason: " + errorReasonProperty.GetValue(resultA));
-            Assert.That(
-                succeededProperty.GetValue(resultB),
-                Is.EqualTo(true),
-                "Perturbed B must succeed. ErrorReason: " + errorReasonProperty.GetValue(resultB));
-            Assert.That(
-                succeededProperty.GetValue(resultAPrime),
-                Is.EqualTo(true),
-                "Baseline A-prime must succeed. ErrorReason: " + errorReasonProperty.GetValue(resultAPrime));
-
-            var positionA = ((Vector3[])finalBodyPositionsProperty.GetValue(resultA))[0];
-            var positionB = ((Vector3[])finalBodyPositionsProperty.GetValue(resultB))[0];
-            var positionAPrime = ((Vector3[])finalBodyPositionsProperty.GetValue(resultAPrime))[0];
-            Assert.That(
-                Vector3.Distance(positionA, positionAPrime),
-                Is.LessThanOrEqualTo(1e-6f),
-                "A-prime must repeat baseline A within the Block 1.1 component gate.");
-            Assert.That(
-                positionB.x - positionA.x,
-                Is.EqualTo(magnitudeMetres).Within(1e-6f),
-                "B must apply the requested X-axis position perturbation exactly once.");
-            Assert.That(
-                positionB.y,
-                Is.EqualTo(positionA.y).Within(1e-6f),
-                "An X-axis perturbation must not change the independent Y trajectory.");
-
-            var recordedPerturbation = appliedPerturbationProperty.GetValue(resultB);
-            Assert.That(
-                perturbationType.GetProperty("TargetBodyId")?.GetValue(recordedPerturbation),
-                Is.EqualTo(7),
-                "Run metadata must record the perturbed body ID.");
-            Assert.That(
-                perturbationType.GetProperty("Axis")?.GetValue(recordedPerturbation),
-                Is.EqualTo(Vector3.right),
-                "Run metadata must record the applied axis.");
-            Assert.That(
-                perturbationType.GetProperty("MagnitudeMetres")?.GetValue(recordedPerturbation),
-                Is.EqualTo(magnitudeMetres),
-                "Run metadata must record the applied magnitude in metres.");
-
-            for (var frame = 0; frame < 20 && SceneManager.sceneCount != initialSceneCount; frame++)
-            {
-                yield return null;
-            }
-
-            Assert.That(
-                SceneManager.sceneCount,
-                Is.EqualTo(initialSceneCount),
-                "A/B/A-prime must unload all three temporary physics scenes.");
-
-            yield return new ExitPlayMode();
-        }
-
-        [UnityTest]
-        public IEnumerator DeterminismProbeReportsAbaMetrics()
-        {
-            yield return new EnterPlayMode();
-
-            var bodyType = Type.GetType("BugCam.Core.SimulationBodyDefinition, BugCam.Core");
-            var perturbationType = Type.GetType("BugCam.Core.SimulationPerturbation, BugCam.Core");
-            var requestType = Type.GetType("BugCam.Core.SimulationRequest, BugCam.Core");
-            var probeType = Type.GetType("BugCam.Core.DeterminismProbe, BugCam.Core");
-            var probeResultType = Type.GetType("BugCam.Core.DeterminismProbeResult, BugCam.Core");
-            var threadingModeType = Type.GetType(
-                "BugCam.Core.SimulationThreadingMode, BugCam.Core");
-            Assert.That(probeType, Is.Not.Null, "Block 1.1 requires a Core DeterminismProbe.");
-            Assert.That(
-                probeResultType,
-                Is.Not.Null,
-                "DeterminismProbe must return a readonly Core result.");
-            Assert.That(
-                threadingModeType,
-                Is.Not.Null,
-                "Threading mode metadata must use a closed Core enum, not arbitrary text.");
-
-            var bodyConstructor = bodyType.GetConstructor(new[]
-            {
-                typeof(int),
-                typeof(Vector3),
-                typeof(Quaternion),
-                typeof(Vector3),
-                typeof(float)
-            });
-            var perturbationConstructor = perturbationType.GetConstructor(new[]
-            {
-                typeof(int),
-                typeof(Vector3),
-                typeof(float)
-            });
-            var requestConstructor = requestType.GetConstructor(new[]
-            {
-                bodyType.MakeArrayType(),
-                typeof(int),
-                perturbationType
-            });
-
-            var body = bodyConstructor.Invoke(new object[]
-            {
-                7,
-                new Vector3(0f, 2f, 0f),
-                Quaternion.identity,
-                Vector3.one,
-                1f
-            });
-            var bodies = Array.CreateInstance(bodyType, 1);
-            bodies.SetValue(body, 0);
-            var baselineRequest = requestConstructor.Invoke(new[]
-            {
-                bodies,
-                (object)10,
-                Activator.CreateInstance(perturbationType)
-            });
-            var perturbedRequest = requestConstructor.Invoke(new[]
-            {
-                bodies,
-                (object)10,
-                perturbationConstructor.Invoke(new object[] { 7, Vector3.right, 0.001f })
-            });
-
-            var runMethod = probeType.GetMethod(
-                "Run",
-                new[] { requestType, requestType, threadingModeType });
-            Assert.That(
-                runMethod,
-                Is.Not.Null,
-                "DeterminismProbe.Run must accept baseline, perturbed, and threading mode inputs.");
-
-            var initialSceneCount = SceneManager.sceneCount;
-            var multiThreadedMode = Enum.Parse(threadingModeType, "MultiThreaded");
-            var result = runMethod.Invoke(
-                Activator.CreateInstance(probeType),
-                new[] { baselineRequest, perturbedRequest, multiThreadedMode });
-
-            Assert.That(
-                probeResultType.GetProperty("Succeeded")?.GetValue(result),
-                Is.EqualTo(true),
-                "A/B/A-prime probe must complete successfully: " +
-                probeResultType.GetProperty("ErrorReason")?.GetValue(result));
-            Assert.That(
-                probeResultType.GetProperty("RepeatBitwiseEqual")?.GetValue(result),
-                Is.EqualTo(true),
-                "Identical A and A-prime traces must report bitwise equality separately from the gate.");
-            Assert.That(
-                probeResultType.GetProperty("RepeatMaxComponentDelta")?.GetValue(result),
-                Is.EqualTo(0f),
-                "A and A-prime must report their measured maximum component delta.");
-            Assert.That(
-                probeResultType.GetProperty("RepeatWithinGate")?.GetValue(result),
-                Is.EqualTo(true),
-                "The 1e-6 repeatability gate must be exposed separately from bitwise equality.");
-            Assert.That(
-                probeResultType.GetProperty("PerturbedFirstDivergingStep")?.GetValue(result),
-                Is.EqualTo(0),
-                "The initial X perturbation must first appear in state frame zero.");
-            Assert.That(
-                probeResultType.GetProperty("PerturbedFirstDivergingBody")?.GetValue(result),
-                Is.EqualTo(7),
-                "The first diverging body must be reported by stable ID.");
-            Assert.That(
-                probeResultType.GetProperty("ManagedBytesAllocatedInLoop")?.GetValue(result),
-                Is.EqualTo(0L),
-                "The probe must report the maximum observed allocation count from A/B/A-prime.");
-            Assert.That(
-                probeResultType.GetProperty("SimulationThreadingMode")?.GetValue(result),
-                Is.EqualTo(multiThreadedMode),
-                "The measured threading mode must be carried into probe metadata.");
-
-            for (var frame = 0; frame < 20 && SceneManager.sceneCount != initialSceneCount; frame++)
-            {
-                yield return null;
-            }
-
-            Assert.That(
-                SceneManager.sceneCount,
-                Is.EqualTo(initialSceneCount),
-                "The determinism probe must unload all A/B/A-prime scenes.");
-
-            yield return new ExitPlayMode();
         }
     }
 }

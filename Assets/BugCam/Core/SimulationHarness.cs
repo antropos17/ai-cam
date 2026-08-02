@@ -221,12 +221,26 @@ namespace BugCam.Core
                 }
             }
 
+            if (!Application.isPlaying)
+            {
+                return SimulationRunResult.Failure(
+                    "SimulationHarness requires Play Mode because it creates an isolated local Physics3D scene.");
+            }
+
             var simulationScene = default(Scene);
             try
             {
+                // This harness requires Play Mode because its isolation model depends on
+                // SceneManager.CreateScene with LocalPhysicsMode.Physics3D.
                 simulationScene = SceneManager.CreateScene(
                     "BugCam Simulation " + nextSceneId++,
                     new CreateSceneParameters(LocalPhysicsMode.Physics3D));
+                if (!simulationScene.IsValid() || !simulationScene.isLoaded)
+                {
+                    return SimulationRunResult.Failure(
+                        "Failed to create a loaded local physics simulation scene.");
+                }
+
                 var physicsScene = simulationScene.GetPhysicsScene();
                 if (!physicsScene.IsValid())
                 {
@@ -247,6 +261,12 @@ namespace BugCam.Core
                 var allocatedBytesBeforeLoop = GC.GetAllocatedBytesForCurrentThread();
                 for (var step = 0; step < request.StepCount; step++)
                 {
+                    if (!physicsScene.IsValid())
+                    {
+                        return SimulationRunResult.Failure(
+                            "The local PhysicsScene became invalid before Simulate.");
+                    }
+
                     physicsScene.Simulate(BugCamConstants.FixedStep);
                     RecordState(runtimeBodies, stateFrames, step);
                 }
