@@ -3,16 +3,17 @@
 > Updated by the agent after every completed block. This file is the memory between sessions.
 
 ## Current position
-- Active block: 1.3 (Block 1.2 StateRecorder + kinematic replay VERIFY PASSED with evidence)
-- Day 1 checkpoint: NOT PASSED (needs Blocks 1.3–1.5 threshold/fan/ghost output)
+- Active block: 1.3 (review-fix on PR #4 — Block 1.4 **not started**)
+- Day 1 checkpoint: NOT PASSED (needs Blocks 1.4–1.5 threshold/fan/ghost console + Scene View fan)
 - Day 2 checkpoint: NOT PASSED
 
 ## Completed blocks
 | Block | Result | Verification | Commit |
 |---|---|---|---|
 | docs | Spec contradictions resolved (11 items), git repo initialised | Review approved by human 2026-07-29 | `chore: docs + claude setup`, `docs: fix spec contradictions` |
-| 1.1 | TowerScene A/B/A′ determinism probe in both threading modes + Editor restart | See Evidence log 2026-08-02 | `feat/tower-probe-checkpoint` |
-| 1.2 | StateRecorder + RunResult + kinematic transform replay VERIFY | See Evidence log 2026-08-02 (Block 1.2) | `feat/block-1.2-state-recorder` (this branch) |
+| 1.1 | TowerScene A/B/A′ determinism probe in both threading modes + Editor restart | See Evidence log 2026-08-02 | squash `91ae29d` (#2) |
+| 1.2 | StateRecorder + RunResult + kinematic transform replay VERIFY | See Evidence log 2026-08-02 (Block 1.2) | squash `a90765a` (#3) |
+| 1.3 | DivergenceSettings + DivergenceEngine synthetic + RunResult integration + review-fix | See Evidence log 2026-08-02 (Block 1.3 review-fix) | `block-1.3: address final divergence review` |
 
 ## Open findings / blockers
 - OPEN (needs a human call): the fan `1.2 × threshold` can exceed the `EpsilonCeiling` of 10 mm when the threshold lands above 8.33 mm. Reporting a fan run from outside the tested range while the verdict says "within tested range" is exactly the kind of dishonest output `CLAUDE.md` forbids. Two candidate resolutions, neither chosen: clamp fan magnitudes to the ceiling and record the clamp in `RunResult`, or extend the tested range to `1.2 × ceiling` and say so in the verdict line.
@@ -22,6 +23,64 @@
 - RESOLVED (Block 1.1 measurement): TowerScene dual-threading A/B/A′ numbers exist under `Library/BugCamEvidence/Block1.1/` (gitignored). `m_ThreadingMode` restored to `0` after the controlled experiment.
 
 ## Evidence log
+
+### 2026-08-02 — Block 1.3 review-fix (PR #4, `feat/block-1.3-divergence-engine`)
+
+**Commit:** `block-1.3: address final divergence review` — SHA: `875afb4484905e968a840e6a29b5bacc644431ec`
+
+**Review findings fixed (exact):**
+1. Non-finite quaternion components (NaN / +Inf / −Inf) rejected before quaternion dot; Analyze returns structured `DivergenceResult` failure (no Inf→clamp→0° path).
+2. Opposite-half AND-gate synthetic test: position > threshold for ≥ SustainedSteps with scene score ≤ SceneScoreThreshold ⇒ not significant; plus strict `>` boundaries at exact score/position thresholds. Existing high-score-without-position test retained.
+3. Non-finite quaternion regression tests (NaN / +Inf / −Inf); q/−q retained.
+4. Checkpoint runner suite pass requires `total>=1`, `failed==0`, `passed==total`, result starts with `Passed`, Unity exit code 0 (empty suite fails).
+5. `Analyze(RunResult,RunResult)` coverage: failed baseline/perturbed, mismatched step/body/stable ids → structured failure (public factories only).
+6. STATUS: AffectedBodyIds definition, SceneScoreThreshold default corrected to 1.0, Day 1 still NOT PASSED, Block 1.4 not started.
+
+**AffectedBodyIds definition:** AffectedBodyIds contains bodies whose maximum position error anywhere in the analyzed run exceeds PerBodyPositionThreshold. It is not limited to the first sustained divergence window.
+
+**VERIFIED FACT — batchmode Unity `6000.3.21f1` after review-fix** (`run-checkpoint.ps1 -Suite All -EvidenceDir Library\BugCamEvidence\PR4-review-fix`, exit 0):
+
+| Suite | total | passed | failed | result | XML |
+|---|---|---|---|---|---|
+| EditMode | 45 | 45 | 0 | Passed | `Library/BugCamEvidence/PR4-review-fix/EditMode.xml` |
+| PlayMode | 11 | 11 | 0 | Passed | `Library/BugCamEvidence/PR4-review-fix/PlayMode.xml` |
+
+EditMode was 34 → 45 (+11: AND-gate opposite half, score/position boundary cases, 3 non-finite quat cases, 5 RunResult Analyze API cases). PlayMode unchanged at 11. Enhanced Determinism OFF; Physics SimulationMode Script; no ProjectSettings drift intended.
+
+**Day 1 hard checkpoint:** NOT PASSED. **Block 1.4:** not started.
+
+### 2026-08-02 — Block 1.3 Divergence Engine (`feat/block-1.3-divergence-engine`)
+
+**VERIFIED FACT — formulas (metres / degrees; mm only at display):**
+- Object scale = characteristic body size in metres (box: largest local-scale axis). Null ⇒ 1 m for every body. Non-positive/non-finite scale ⇒ fall back to 1 m (never NaN/Infinity in posNorm).
+- Per body, per frame: `posNorm = |Δpos| / objectScale`, `rotNorm = angleDegrees(q,q') / PerBodyRotationThreshold` (q and −q identical), `velNorm = |Δvel| / PerBodyVelocityThreshold`, `sleep ∈ {0,1}`.
+- Scene Divergence Score (step) = `Σ_i (Wp·posNorm + Wr·rotNorm + Wv·velNorm + Ws·sleep)` (weighted sum, not a mean; default gate 1.0).
+- Significant iff score > `SceneScoreThreshold` AND ≥1 body has `|Δpos| > PerBodyPositionThreshold` AND both hold for `SustainedSteps` consecutive frames. `firstDivergenceFrame` = first frame of that window.
+- `amplification = maxSpreadMetres / epsilonMetres` when epsilon > 0; when epsilon == 0 → `AmplificationDefined=false`, `Amplification=0` (never Infinity).
+- Quaternion components must be finite before angle; non-finite ⇒ structured Analyze failure.
+
+**ASSUMPTION:** default thresholds in `DivergenceSettings` (e.g. position 1 mm, scene score **1.0**, weights) are provisional product defaults with why-comments; Block 1.4/2.1 may ratify provisional evidence/search fields.
+
+**LIMITATION:** engine is a post-process over recorded frames — it does not search epsilon, draw ghosts, or claim cross-machine repeatability.
+
+**OPEN QUESTION:** whether provisional `MinEvidenceCoverageScore` / `EvidenceCandidateCount` / `BisectionIterations=7` survive Block 1.4/2.1 unchanged.
+
+**Block 1.2 quaternion caveat (preserved):** Transform replay is component-exact for the verified identity-rotation fixture. Arbitrary normalized quaternions may differ by approximately one ULP after Readback while remaining rotationally equivalent.
+
+**VERIFIED FACT — batchmode Unity `6000.3.21f1`:**
+
+| Suite | total | passed | failed | result | XML |
+|---|---|---|---|---|---|
+| EditMode | 34 | 34 | 0 | Passed | `Library/BugCamEvidence/Block1.3/EditMode.xml` |
+| PlayMode | 11 | 11 | 0 | Passed | `Library/BugCamEvidence/Block1.3/PlayMode.xml` |
+
+EditMode +21 (`DivergenceEngineTests` — 20 required synthetic cases + settings defaults). PlayMode +1 (`AnalyzeAcceptsRealRunResultsFromHarness`). Blocks 1.1/1.2 regressions included.
+
+**Block 1.3 VERIFY conclusion:** PASSED. Day 1 hard gate remains NOT PASSED until Blocks 1.4 and 1.5 pass.
+
+**Residual tails:** checkpoint asserts `enhancedDeterminism == false`; EditMode contract asserts `StateStride == 14` and `RepeatabilityGate == 1e-6`.
+
+**VERIFIED FACT — checkpoint runner tracked:** `Tools/BugCam/run-checkpoint.ps1` is the repository-portable development automation entry point (resolves project root from `$PSScriptRoot`, optional `-UnityExe`, discovers Unity `6000.3.21f1`, writes evidence under gitignored `Library/BugCamEvidence/`). Development automation only — not a BugCam Core dependency and not product runtime.
 
 ### 2026-08-02 — Block 1.2 StateRecorder + kinematic replay (`feat/block-1.2-state-recorder`)
 

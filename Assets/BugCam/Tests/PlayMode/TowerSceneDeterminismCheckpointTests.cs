@@ -86,6 +86,10 @@ namespace BugCam.Tests
             var threadingMode = readMode.Invoke(null, null);
             var threadingModeSerialized = (int)readModeSerialized.Invoke(null, null);
             var enhancedDeterminism = (bool)readEnhanced.Invoke(null, null);
+            Assert.That(
+                enhancedDeterminism,
+                Is.False,
+                "Enhanced Determinism must remain disabled for Block 1.1 evidence.");
 
             var bodies = requestType.GetProperty("Bodies")?.GetValue(baselineRequest) as Array;
             Assert.That(bodies, Has.Length.EqualTo(49));

@@ -116,6 +116,14 @@ namespace BugCam.Tests
                 Is.EqualTo(0.02f),
                 "The only physics step is 0.02 seconds.");
             Assert.That(
+                constantsType.GetField("StateStride")?.GetRawConstantValue(),
+                Is.EqualTo(14),
+                "State stride remains exactly 14 floats.");
+            Assert.That(
+                constantsType.GetField("RepeatabilityGate")?.GetRawConstantValue(),
+                Is.EqualTo(1e-6f),
+                "Repeatability gate remains exactly 1e-6.");
+            Assert.That(
                 harnessType?.GetMethod("Run"),
                 Is.Not.Null,
                 "SimulationHarness.Run is the Block 1.1 entry point.");
