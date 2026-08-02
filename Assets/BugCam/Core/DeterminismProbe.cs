@@ -62,22 +62,40 @@ namespace BugCam.Core
         private DeterminismProbeResult(
             bool succeeded,
             string errorReason,
+            int bodyCount,
+            int stepCount,
             bool repeatBitwiseEqual,
             bool repeatWithinGate,
             float repeatMaxComponentDelta,
+            int repeatFirstDivergingStep,
+            int repeatFirstDivergingBody,
+            bool perturbedBitwiseEqual,
+            bool perturbedWithinGate,
+            float perturbedMaxComponentDelta,
             int perturbedFirstDivergingStep,
             int perturbedFirstDivergingBody,
             long managedBytesAllocatedInLoop,
+            bool localPhysicsSceneValid,
+            bool temporaryScenesUnloadRequested,
             SimulationThreadingMode simulationThreadingMode)
         {
             Succeeded = succeeded;
             ErrorReason = errorReason;
+            BodyCount = bodyCount;
+            StepCount = stepCount;
             RepeatBitwiseEqual = repeatBitwiseEqual;
             RepeatWithinGate = repeatWithinGate;
             RepeatMaxComponentDelta = repeatMaxComponentDelta;
+            RepeatFirstDivergingStep = repeatFirstDivergingStep;
+            RepeatFirstDivergingBody = repeatFirstDivergingBody;
+            PerturbedBitwiseEqual = perturbedBitwiseEqual;
+            PerturbedWithinGate = perturbedWithinGate;
+            PerturbedMaxComponentDelta = perturbedMaxComponentDelta;
             PerturbedFirstDivergingStep = perturbedFirstDivergingStep;
             PerturbedFirstDivergingBody = perturbedFirstDivergingBody;
             ManagedBytesAllocatedInLoop = managedBytesAllocatedInLoop;
+            LocalPhysicsSceneValid = localPhysicsSceneValid;
+            TemporaryScenesUnloadRequested = temporaryScenesUnloadRequested;
             SimulationThreadingMode = simulationThreadingMode;
         }
 
@@ -85,11 +103,25 @@ namespace BugCam.Core
 
         public string ErrorReason { get; }
 
+        public int BodyCount { get; }
+
+        public int StepCount { get; }
+
         public bool RepeatBitwiseEqual { get; }
 
         public bool RepeatWithinGate { get; }
 
         public float RepeatMaxComponentDelta { get; }
+
+        public int RepeatFirstDivergingStep { get; }
+
+        public int RepeatFirstDivergingBody { get; }
+
+        public bool PerturbedBitwiseEqual { get; }
+
+        public bool PerturbedWithinGate { get; }
+
+        public float PerturbedMaxComponentDelta { get; }
 
         public int PerturbedFirstDivergingStep { get; }
 
@@ -97,26 +129,48 @@ namespace BugCam.Core
 
         public long ManagedBytesAllocatedInLoop { get; }
 
+        public bool LocalPhysicsSceneValid { get; }
+
+        public bool TemporaryScenesUnloadRequested { get; }
+
         public SimulationThreadingMode SimulationThreadingMode { get; }
 
         internal static DeterminismProbeResult Success(
+            int bodyCount,
+            int stepCount,
             bool repeatBitwiseEqual,
             bool repeatWithinGate,
             float repeatMaxComponentDelta,
+            int repeatFirstDivergingStep,
+            int repeatFirstDivergingBody,
+            bool perturbedBitwiseEqual,
+            bool perturbedWithinGate,
+            float perturbedMaxComponentDelta,
             int perturbedFirstDivergingStep,
             int perturbedFirstDivergingBody,
             long managedBytesAllocatedInLoop,
+            bool localPhysicsSceneValid,
+            bool temporaryScenesUnloadRequested,
             SimulationThreadingMode simulationThreadingMode)
         {
             return new DeterminismProbeResult(
                 true,
                 string.Empty,
+                bodyCount,
+                stepCount,
                 repeatBitwiseEqual,
                 repeatWithinGate,
                 repeatMaxComponentDelta,
+                repeatFirstDivergingStep,
+                repeatFirstDivergingBody,
+                perturbedBitwiseEqual,
+                perturbedWithinGate,
+                perturbedMaxComponentDelta,
                 perturbedFirstDivergingStep,
                 perturbedFirstDivergingBody,
                 managedBytesAllocatedInLoop,
+                localPhysicsSceneValid,
+                temporaryScenesUnloadRequested,
                 simulationThreadingMode);
         }
 
@@ -125,12 +179,21 @@ namespace BugCam.Core
             return new DeterminismProbeResult(
                 false,
                 errorReason,
+                0,
+                0,
+                false,
+                false,
+                0f,
+                -1,
+                -1,
                 false,
                 false,
                 0f,
                 -1,
                 -1,
                 0L,
+                false,
+                false,
                 default);
         }
     }
@@ -205,13 +268,22 @@ namespace BugCam.Core
             var repeatability = RepeatabilityMetricsCalculator.Calculate(
                 resultA.StateFrames,
                 resultAPrime.StateFrames);
+            FindFirstDivergence(
+                resultA.StateFrames,
+                resultAPrime.StateFrames,
+                stableBodyIds,
+                out var repeatFirstStep,
+                out var repeatFirstBody);
 
-            FindFirstPerturbedDivergence(
+            var perturbed = RepeatabilityMetricsCalculator.Calculate(
+                resultA.StateFrames,
+                resultB.StateFrames);
+            FindFirstDivergence(
                 resultA.StateFrames,
                 resultB.StateFrames,
                 stableBodyIds,
-                out var firstDivergingStep,
-                out var firstDivergingBody);
+                out var perturbedFirstStep,
+                out var perturbedFirstBody);
 
             var managedBytesAllocatedInLoop = Math.Max(
                 resultA.ManagedBytesAllocatedInLoop,
@@ -219,13 +291,31 @@ namespace BugCam.Core
                     resultB.ManagedBytesAllocatedInLoop,
                     resultAPrime.ManagedBytesAllocatedInLoop));
 
+            var localPhysicsSceneValid =
+                resultA.LocalPhysicsSceneWasValid &&
+                resultB.LocalPhysicsSceneWasValid &&
+                resultAPrime.LocalPhysicsSceneWasValid;
+            var unloadRequested =
+                resultA.TemporarySceneUnloadRequested &&
+                resultB.TemporarySceneUnloadRequested &&
+                resultAPrime.TemporarySceneUnloadRequested;
+
             return DeterminismProbeResult.Success(
+                stableBodyIds.Length,
+                baselineRequest.StepCount,
                 repeatability.BitwiseEqual,
                 repeatability.WithinGate,
                 repeatability.MaxComponentDelta,
-                firstDivergingStep,
-                firstDivergingBody,
+                repeatFirstStep,
+                repeatFirstBody,
+                perturbed.BitwiseEqual,
+                perturbed.WithinGate,
+                perturbed.MaxComponentDelta,
+                perturbedFirstStep,
+                perturbedFirstBody,
                 managedBytesAllocatedInLoop,
+                localPhysicsSceneValid,
+                unloadRequested,
                 simulationThreadingMode);
         }
 
@@ -291,9 +381,9 @@ namespace BugCam.Core
             return stableBodyIds;
         }
 
-        private static void FindFirstPerturbedDivergence(
+        private static void FindFirstDivergence(
             float[] baselineFrames,
-            float[] perturbedFrames,
+            float[] comparisonFrames,
             int[] stableBodyIds,
             out int firstDivergingStep,
             out int firstDivergingBody)
@@ -313,7 +403,7 @@ namespace BugCam.Core
                     {
                         if (Math.Abs(
                                 baselineFrames[bodyOffset + component] -
-                                perturbedFrames[bodyOffset + component]) >
+                                comparisonFrames[bodyOffset + component]) >
                             BugCamConstants.RepeatabilityGate)
                         {
                             firstDivergingStep = step;

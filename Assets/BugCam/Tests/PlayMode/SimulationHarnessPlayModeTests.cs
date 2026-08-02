@@ -710,6 +710,14 @@ namespace BugCam.Tests
                 probeResultType.GetProperty("SimulationThreadingMode")?.GetValue(result),
                 Is.EqualTo(multiThreadedMode),
                 "The measured threading mode must be carried into probe metadata.");
+            Assert.That(
+                probeResultType.GetProperty("LocalPhysicsSceneValid")?.GetValue(result),
+                Is.EqualTo(true),
+                "A/B/A-prime must each observe a valid local PhysicsScene.");
+            Assert.That(
+                probeResultType.GetProperty("TemporaryScenesUnloadRequested")?.GetValue(result),
+                Is.EqualTo(true),
+                "A/B/A-prime must each request temporary scene unload.");
 
             for (var frame = 0; frame < 20 && SceneManager.sceneCount != initialSceneCount; frame++)
             {

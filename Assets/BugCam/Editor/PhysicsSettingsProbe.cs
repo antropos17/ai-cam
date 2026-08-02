@@ -1,5 +1,7 @@
 #if UNITY_EDITOR
 using System;
+using System.Globalization;
+using System.Text;
 using BugCam.Core;
 using UnityEditor;
 using UnityEngine;
@@ -12,14 +14,7 @@ namespace BugCam.Editor
 
         public static SimulationThreadingMode ReadThreadingMode()
         {
-            var serializedSettings = LoadSerializedSettings();
-            var threadingMode = serializedSettings.FindProperty("m_ThreadingMode");
-            if (threadingMode == null)
-            {
-                throw new InvalidOperationException(
-                    "Unity physics settings do not expose m_ThreadingMode.");
-            }
-
+            var threadingMode = FindThreadingModeProperty();
             switch (threadingMode.intValue)
             {
                 case 0:
@@ -31,6 +26,80 @@ namespace BugCam.Editor
                         "Unsupported Unity physics threading mode value: " +
                         threadingMode.intValue + ".");
             }
+        }
+
+        public static int ReadThreadingModeSerialized()
+        {
+            return FindThreadingModeProperty().intValue;
+        }
+
+        public static void SetThreadingMode(SimulationThreadingMode mode)
+        {
+            if (!Enum.IsDefined(typeof(SimulationThreadingMode), mode))
+            {
+                throw new InvalidOperationException(
+                    "Unsupported SimulationThreadingMode: " + mode + ".");
+            }
+
+            var assets = AssetDatabase.LoadAllAssetsAtPath(DynamicsManagerPath);
+            if (assets.Length == 0)
+            {
+                throw new InvalidOperationException(
+                    $"Unity did not expose {DynamicsManagerPath} through AssetDatabase.");
+            }
+
+            var serializedSettings = new SerializedObject(assets[0]);
+            serializedSettings.Update();
+            var threadingMode = serializedSettings.FindProperty("m_ThreadingMode");
+            if (threadingMode == null)
+            {
+                throw new InvalidOperationException(
+                    "Unity physics settings do not expose m_ThreadingMode.");
+            }
+
+            threadingMode.intValue = mode == SimulationThreadingMode.MultiThreaded ? 0 : 1;
+            serializedSettings.ApplyModifiedPropertiesWithoutUndo();
+            AssetDatabase.SaveAssets();
+        }
+
+        public static bool ReadEnhancedDeterminism()
+        {
+            var assets = AssetDatabase.LoadAllAssetsAtPath(DynamicsManagerPath);
+            var serializedSettings = new SerializedObject(assets[0]);
+            serializedSettings.Update();
+            var property = serializedSettings.FindProperty("m_EnableEnhancedDeterminism");
+            return property != null && property.boolValue;
+        }
+
+        public static void WriteEnvironmentSnapshot(string path, string gitCommit, string phase)
+        {
+            var sb = new StringBuilder(1024);
+            sb.AppendLine("BUGCAM_ENVIRONMENT_SNAPSHOT");
+            sb.AppendLine("phase=" + phase);
+            sb.AppendLine("unityVersion=" + Application.unityVersion);
+            sb.AppendLine("platform=" + Application.platform);
+            sb.AppendLine("operatingSystem=" + SystemInfo.operatingSystem);
+            sb.AppendLine("processorType=" + SystemInfo.processorType);
+            sb.AppendLine("graphicsDeviceName=" + SystemInfo.graphicsDeviceName);
+            sb.AppendLine(
+                "scriptingBackend=" +
+                PlayerSettings.GetScriptingBackend(BuildTargetGroup.Standalone));
+            sb.AppendLine(
+                "gravity=" +
+                Physics.gravity.ToString("R", CultureInfo.InvariantCulture));
+            sb.AppendLine("solverIterations=" + Physics.defaultSolverIterations);
+            sb.AppendLine(
+                "solverVelocityIterations=" + Physics.defaultSolverVelocityIterations);
+            sb.AppendLine("autoSyncTransforms=" + Physics.autoSyncTransforms);
+            sb.AppendLine("simulationMode=" + Physics.simulationMode);
+            sb.AppendLine("threadingMode=" + ReadThreadingMode());
+            sb.AppendLine("threadingModeSerialized=" + ReadThreadingModeSerialized());
+            sb.AppendLine("enhancedDeterminism=" + ReadEnhancedDeterminism());
+            sb.AppendLine(
+                "fixedDeltaTime=" +
+                Time.fixedDeltaTime.ToString("R", CultureInfo.InvariantCulture));
+            sb.AppendLine("gitCommit=" + gitCommit);
+            TowerCheckpointMetricsWriter.WriteAtomic(path, sb.ToString());
         }
 
         public static void Print()
@@ -52,6 +121,19 @@ namespace BugCam.Editor
             while (iterator.NextVisible(false));
 
             Debug.Log($"BUGCAM_TIME fixedDeltaTime={Time.fixedDeltaTime:R}");
+        }
+
+        private static SerializedProperty FindThreadingModeProperty()
+        {
+            var serializedSettings = LoadSerializedSettings();
+            var threadingMode = serializedSettings.FindProperty("m_ThreadingMode");
+            if (threadingMode == null)
+            {
+                throw new InvalidOperationException(
+                    "Unity physics settings do not expose m_ThreadingMode.");
+            }
+
+            return threadingMode;
         }
 
         private static SerializedObject LoadSerializedSettings()
