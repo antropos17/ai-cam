@@ -100,7 +100,9 @@ namespace BugCam.Core
             int[] stableBodyIds,
             SimulationPerturbation appliedPerturbation,
             float[] stateFrames,
-            long managedBytesAllocatedInLoop)
+            long managedBytesAllocatedInLoop,
+            bool localPhysicsSceneWasValid,
+            bool temporarySceneUnloadRequested)
         {
             Succeeded = succeeded;
             ErrorReason = errorReason;
@@ -109,6 +111,8 @@ namespace BugCam.Core
             AppliedPerturbation = appliedPerturbation;
             StateFrames = stateFrames;
             ManagedBytesAllocatedInLoop = managedBytesAllocatedInLoop;
+            LocalPhysicsSceneWasValid = localPhysicsSceneWasValid;
+            TemporarySceneUnloadRequested = temporarySceneUnloadRequested;
         }
 
         public bool Succeeded { get; }
@@ -125,12 +129,18 @@ namespace BugCam.Core
 
         public long ManagedBytesAllocatedInLoop { get; }
 
+        public bool LocalPhysicsSceneWasValid { get; }
+
+        public bool TemporarySceneUnloadRequested { get; }
+
         internal static SimulationRunResult Success(
             Vector3[] finalBodyPositions,
             int[] stableBodyIds,
             SimulationPerturbation appliedPerturbation,
             float[] stateFrames,
-            long managedBytesAllocatedInLoop)
+            long managedBytesAllocatedInLoop,
+            bool localPhysicsSceneWasValid,
+            bool temporarySceneUnloadRequested)
         {
             return new SimulationRunResult(
                 true,
@@ -139,7 +149,9 @@ namespace BugCam.Core
                 stableBodyIds,
                 appliedPerturbation,
                 stateFrames,
-                managedBytesAllocatedInLoop);
+                managedBytesAllocatedInLoop,
+                localPhysicsSceneWasValid,
+                temporarySceneUnloadRequested);
         }
 
         internal static SimulationRunResult Failure(string errorReason)
@@ -151,7 +163,9 @@ namespace BugCam.Core
                 EmptyStableBodyIds,
                 default,
                 EmptyStateFrames,
-                0L);
+                0L,
+                false,
+                false);
         }
     }
 
@@ -228,6 +242,10 @@ namespace BugCam.Core
             }
 
             var simulationScene = default(Scene);
+            var temporarySceneUnloadRequested = false;
+            SimulationRunResult pendingResult = SimulationRunResult.Failure(
+                "Simulation did not produce a result.");
+            var hasPendingSuccess = false;
             try
             {
                 // This harness requires Play Mode because its isolation model depends on
@@ -246,6 +264,10 @@ namespace BugCam.Core
                 {
                     return SimulationRunResult.Failure("The local PhysicsScene is invalid.");
                 }
+
+                // Static ground matches TowerSceneGenerator so tower bodies rest/collide
+                // identically to the demo scene. Not counted in the 49 Rigidbody body set.
+                CreateGround(simulationScene);
 
                 var runtimeBodies = new Rigidbody[orderedBodies.Length];
                 for (var bodyIndex = 0; bodyIndex < orderedBodies.Length; bodyIndex++)
@@ -281,12 +303,15 @@ namespace BugCam.Core
                     stableBodyIds[bodyIndex] = orderedBodies[bodyIndex].StableId;
                 }
 
-                return SimulationRunResult.Success(
+                pendingResult = SimulationRunResult.Success(
                     finalBodyPositions,
                     stableBodyIds,
                     appliedPerturbation,
                     stateFrames,
-                    managedBytesAllocatedInLoop);
+                    managedBytesAllocatedInLoop,
+                    localPhysicsSceneWasValid: true,
+                    temporarySceneUnloadRequested: false);
+                hasPendingSuccess = true;
             }
             catch (Exception exception)
             {
@@ -297,8 +322,23 @@ namespace BugCam.Core
                 if (simulationScene.IsValid() && simulationScene.isLoaded)
                 {
                     SceneManager.UnloadSceneAsync(simulationScene);
+                    temporarySceneUnloadRequested = true;
                 }
             }
+
+            if (!hasPendingSuccess)
+            {
+                return pendingResult;
+            }
+
+            return SimulationRunResult.Success(
+                pendingResult.FinalBodyPositions,
+                pendingResult.StableBodyIds,
+                pendingResult.AppliedPerturbation,
+                pendingResult.StateFrames,
+                pendingResult.ManagedBytesAllocatedInLoop,
+                pendingResult.LocalPhysicsSceneWasValid,
+                temporarySceneUnloadRequested);
         }
 
         private static SimulationBodyDefinition[] CopyBodiesInStableIdOrder(
@@ -358,6 +398,15 @@ namespace BugCam.Core
                    !float.IsNaN(value.y) &&
                    !float.IsNaN(value.z) &&
                    !float.IsNaN(value.w);
+        }
+
+        private static void CreateGround(Scene simulationScene)
+        {
+            var ground = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            ground.name = "BugCam Ground";
+            ground.transform.SetPositionAndRotation(new Vector3(0f, -0.5f, 0f), Quaternion.identity);
+            ground.transform.localScale = new Vector3(20f, 1f, 20f);
+            SceneManager.MoveGameObjectToScene(ground, simulationScene);
         }
 
         private static Rigidbody CreateBody(
