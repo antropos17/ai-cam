@@ -279,5 +279,21 @@ namespace BugCam.Core
                 weightVelocity,
                 weightSleep);
         }
+
+        /// <summary>
+        /// Plain-struct view of Block 1.4 adaptive epsilon search fields.
+        /// </summary>
+        public EpsilonSearchSettings ToSearchSettings()
+        {
+            return EpsilonSearchSettings.FromDivergenceSettings(this);
+        }
+
+        /// <summary>
+        /// Empty string when Block 1.4 search fields are usable; otherwise the validation reason.
+        /// </summary>
+        public string ValidateSearchSettings()
+        {
+            return ToSearchSettings().Validate();
+        }
     }
 }

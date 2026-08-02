@@ -3,8 +3,8 @@
 > Updated by the agent after every completed block. This file is the memory between sessions.
 
 ## Current position
-- Active block: 1.3 (review-fix on PR #4 — Block 1.4 **not started**)
-- Day 1 checkpoint: NOT PASSED (needs Blocks 1.4–1.5 threshold/fan/ghost console + Scene View fan)
+- Active block: 1.4 (adaptive epsilon search on `feat/block-1.4-epsilon-search`)
+- Day 1 checkpoint: NOT PASSED (needs Block 1.5 ghost visualization for Scene View fan; 1.4 supplies threshold/fan console numbers)
 - Day 2 checkpoint: NOT PASSED
 
 ## Completed blocks
@@ -13,16 +13,34 @@
 | docs | Spec contradictions resolved (11 items), git repo initialised | Review approved by human 2026-07-29 | `chore: docs + claude setup`, `docs: fix spec contradictions` |
 | 1.1 | TowerScene A/B/A′ determinism probe in both threading modes + Editor restart | See Evidence log 2026-08-02 | squash `91ae29d` (#2) |
 | 1.2 | StateRecorder + RunResult + kinematic transform replay VERIFY | See Evidence log 2026-08-02 (Block 1.2) | squash `a90765a` (#3) |
-| 1.3 | DivergenceSettings + DivergenceEngine synthetic + RunResult integration + review-fix | See Evidence log 2026-08-02 (Block 1.3 review-fix) | `block-1.3: address final divergence review` |
+| 1.3 | DivergenceSettings + DivergenceEngine synthetic + RunResult integration + review-fix | See Evidence log 2026-08-02 (Block 1.3 review-fix) | squash `6d676ad` (#4) |
+| 1.4 | Adaptive epsilon search (step-driven) + EditMode/PlayMode VERIFY | See Evidence log 2026-08-02 (Block 1.4) | `block-1.4: add adaptive epsilon search` (branch HEAD) |
 
 ## Open findings / blockers
-- OPEN (needs a human call): the fan `1.2 × threshold` can exceed the `EpsilonCeiling` of 10 mm when the threshold lands above 8.33 mm. Reporting a fan run from outside the tested range while the verdict says "within tested range" is exactly the kind of dishonest output `CLAUDE.md` forbids. Two candidate resolutions, neither chosen: clamp fan magnitudes to the ceiling and record the clamp in `RunResult`, or extend the tested range to `1.2 × ceiling` and say so in the verdict line.
+- RESOLVED (Block 1.4 design): fan samples may exceed `EpsilonCeiling` up to `1.2 × EpsilonCeiling`. Magnitudes are **not** silently clamped; every fan sample above the search ceiling is marked `OutsideSearchRange=true`. Search range and characterization range are reported separately.
 - OPEN (needs a human call): `.gitignore` line 21 excludes `*.csproj`, and the headless test csproj deferred to Block 1.3 is a hand-authored file that would therefore be silently untracked. Either force-add it (`!BugCam.Tests.csproj`) or generate it from a committed script.
 - OPEN (wording): `CLAUDE.md` line 33 says bitwise equality is "never used as the gate", while `PLAN.md` Block 1.4 VERIFY (a) makes bit-identical a hard pass condition. The two were reconciled in the 2026-07-29 decision below (1.4a is a determinism regression test, not the feature gate) but `CLAUDE.md` still reads as an absolute. One clarifying clause fixes it.
 - RESOLVED (code path): local `PhysicsScene` via `SceneManager.CreateScene(..., LocalPhysicsMode.Physics3D)` requires Play Mode. Production harness now fails deterministically outside Play Mode; simulation tests live in `BugCam.Tests.PlayMode`. See Evidence log 2026-08-01.
 - RESOLVED (Block 1.1 measurement): TowerScene dual-threading A/B/A′ numbers exist under `Library/BugCamEvidence/Block1.1/` (gitignored). `m_ThreadingMode` restored to `0` after the controlled experiment.
 
 ## Evidence log
+
+### 2026-08-02 — Block 1.4 adaptive epsilon search (`feat/block-1.4-epsilon-search`)
+
+**Implementation:** step-driven `EpsilonSearch` (`TryGetNextProbe` / `SubmitProbeResult`) + `EpsilonSearchRunner` (sequential harness probes, scene-cleanup wait). Ladder → monotonicity gate → exponential (strategy) → bisection → fan. Retains full `RunResult` frames for baseline + exactly 15 fan runs; compact summaries elsewhere. Fan above search ceiling marked `OutsideSearchRange` (no silent clamp). Search range vs characterization range reported separately. Never claims an exact mathematical threshold.
+
+**VERIFY correction (docs):** algorithm convergence compares starting strategies on the same axis / scene / target body / configuration. X/Y/Z are directional characterization only.
+
+**VERIFIED FACT — batchmode Unity `6000.3.21f1`** (`run-checkpoint.ps1 -Suite All -EvidenceDir Library\BugCamEvidence\Block1.4`, exit 0):
+
+| Suite | total | passed | failed | result | XML |
+|---|---|---|---|---|---|
+| EditMode | 58 | 58 | 0 | Passed | `Library/BugCamEvidence/Block1.4/EditMode.xml` |
+| PlayMode | 16 | 16 | 0 | Passed | `Library/BugCamEvidence/Block1.4/PlayMode.xml` |
+
+EditMode +13 (`EpsilonSearchTests`). PlayMode +5 (`EpsilonSearchPlayModeTests`). Blocks 1.1–1.3 regressions included.
+
+**Day 1 hard checkpoint:** NOT PASSED (Block 1.5 ghost visualization still required for Scene View fan).
 
 ### 2026-08-02 — Block 1.3 review-fix (PR #4, `feat/block-1.3-divergence-engine`)
 
@@ -183,6 +201,7 @@ Canonical copies after run 2: `Library/BugCamTestResults.EditMode.xml`, `Library
 **Remaining open questions from that entry:** superseded for Block 1.1 measurement — see 2026-08-02 evidence. Allocation-zero held on this Editor/Mono probe path; broader GC/runtime variants remain untested.
 
 ## Decisions log
+- 2026-08-02 — Block 1.4 VERIFY (b) corrected: algorithm convergence compares different starting strategies on the **same axis, same scene, same target body, same configuration**. X/Y/Z searches are directional characterization; physical thresholds are reported but not required to match. Fan above search ceiling is marked `OutsideSearchRange` (no silent clamp). Search range and characterization range are reported separately.
 - 2026-08-02 — Block 1.2 kinematic VERIFY uses Transform-only replay (`SetLocalPositionAndRotation`), not Rigidbody writeback (PhysX set/get added ~1 ULP). `StateRecorder` stores normalized quaternions. Branch `feat/block-1.2-state-recorder` stacks on `feat/tower-probe-checkpoint` (PR #2); do not auto-merge.
 - 2026-08-02 — Block 1.1 dual-mode TowerScene probe uses separate batchmode Editor processes that patch `m_ThreadingMode` via `PhysicsSettingsProbe.SetThreadingMode`, then run the filtered PlayMode checkpoint test. Never leave Enhanced Determinism on; restore `m_ThreadingMode` to MultiThreaded (`0`) after the experiment. Evidence stays under gitignored `Library/BugCamEvidence/Block1.1/`.
 - 2026-08-01 — Production `SimulationHarness` is Play Mode-only for local Physics3D scene creation. Edit Mode retains contract/reflection tests only. Obsolete “harness in Edit Mode” plan wording corrected. `BugCamTestResults.xml` documented as latest-suite copy, not a merged report.
