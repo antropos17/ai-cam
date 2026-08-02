@@ -278,8 +278,10 @@ namespace BugCam.Core
                         appliedPerturbation);
                 }
 
-                var stateFrames = new float[
-                    request.StepCount * runtimeBodies.Length * BugCamConstants.StateStride];
+                var recorder = StateRecorder.Allocate(
+                    runCount: 1,
+                    request.StepCount,
+                    runtimeBodies.Length);
                 var allocatedBytesBeforeLoop = GC.GetAllocatedBytesForCurrentThread();
                 for (var step = 0; step < request.StepCount; step++)
                 {
@@ -290,7 +292,7 @@ namespace BugCam.Core
                     }
 
                     physicsScene.Simulate(BugCamConstants.FixedStep);
-                    RecordState(runtimeBodies, stateFrames, step);
+                    recorder.WriteRigidbodies(runIndex: 0, step, runtimeBodies);
                 }
                 var managedBytesAllocatedInLoop =
                     GC.GetAllocatedBytesForCurrentThread() - allocatedBytesBeforeLoop;
@@ -307,7 +309,7 @@ namespace BugCam.Core
                     finalBodyPositions,
                     stableBodyIds,
                     appliedPerturbation,
-                    stateFrames,
+                    recorder.Buffer,
                     managedBytesAllocatedInLoop,
                     localPhysicsSceneWasValid: true,
                     temporarySceneUnloadRequested: false);
@@ -435,33 +437,6 @@ namespace BugCam.Core
             return rigidbody;
         }
 
-        private static void RecordState(Rigidbody[] bodies, float[] stateFrames, int step)
-        {
-            for (var bodyIndex = 0; bodyIndex < bodies.Length; bodyIndex++)
-            {
-                var body = bodies[bodyIndex];
-                var position = body.position;
-                var rotation = body.rotation;
-                var linearVelocity = body.linearVelocity;
-                var angularVelocity = body.angularVelocity;
-                var offset =
-                    ((step * bodies.Length) + bodyIndex) * BugCamConstants.StateStride;
-
-                stateFrames[offset] = position.x;
-                stateFrames[offset + 1] = position.y;
-                stateFrames[offset + 2] = position.z;
-                stateFrames[offset + 3] = rotation.x;
-                stateFrames[offset + 4] = rotation.y;
-                stateFrames[offset + 5] = rotation.z;
-                stateFrames[offset + 6] = rotation.w;
-                stateFrames[offset + 7] = linearVelocity.x;
-                stateFrames[offset + 8] = linearVelocity.y;
-                stateFrames[offset + 9] = linearVelocity.z;
-                stateFrames[offset + 10] = angularVelocity.x;
-                stateFrames[offset + 11] = angularVelocity.y;
-                stateFrames[offset + 12] = angularVelocity.z;
-                stateFrames[offset + 13] = body.IsSleeping() ? 1f : 0f;
-            }
-        }
     }
 }
+
