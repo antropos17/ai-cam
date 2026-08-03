@@ -21,9 +21,17 @@ namespace BugCam.Editor
         private const string PendingKey = "BugCam.GhostHost.Pending";
         private const string BusyKey = "BugCam.GhostSearch.Busy";
         private const string SourceKey = "BugCam.GhostHost.Source";
+        private const string InterruptedStatus =
+            "Interrupted: Play Mode exited before search completed.";
 
         public const string SourceWindow = "window";
         public const string SourceMenu = "menu";
+
+        /// <summary>
+        /// EditMode test seam: when false, <see cref="TryStartTowerSearch"/> still accepts and
+        /// records Busy/Pending but does not flip <see cref="EditorApplication.isPlaying"/>.
+        /// </summary>
+        internal static bool AllowPlayModeEntry = true;
 
         /// <summary>Raised on the main thread when a hosted search finishes (success or failure).</summary>
         public static event Action<GhostSearchCompletion> SearchCompleted;
@@ -90,7 +98,11 @@ namespace BugCam.Editor
                 SessionState.SetFloat("BugCam.GhostHost.AxisX", searchAxis.x);
                 SessionState.SetFloat("BugCam.GhostHost.AxisY", searchAxis.y);
                 SessionState.SetFloat("BugCam.GhostHost.AxisZ", searchAxis.z);
-                EditorApplication.isPlaying = true;
+                if (AllowPlayModeEntry)
+                {
+                    EditorApplication.isPlaying = true;
+                }
+
                 return;
             }
 
@@ -107,10 +119,89 @@ namespace BugCam.Editor
             {
                 // Interrupted or abandoned run: clear Busy/Pending even if PendingKey
                 // was already cleared when the runner started (mid-run exit).
-                if (IsSearchBusy)
+                // Runner uses DontDestroyOnLoad + DontSave, so Play Mode exit alone
+                // will not dispose it — destroy explicitly to avoid TEMP leaks.
+                // Use deferred Destroy during the exit transition; hard-sweep leftovers
+                // on EnteredEditMode (DestroyImmediate mid-exit can strand the next entry).
+                CleanupHostOwnedSearch(notifyInterrupted: true, preferDeferredDestroy: true);
+            }
+            else if (state == PlayModeStateChange.EnteredEditMode)
+            {
+                DestroyTempRunnerIfPresent(preferDeferredDestroy: false);
+            }
+        }
+
+        /// <summary>
+        /// Deterministic seam mirroring <see cref="PlayModeStateChange.ExitingPlayMode"/> cleanup
+        /// without requiring an actual Play Mode transition.
+        /// </summary>
+        internal static void CleanupInterruptedSearchForTests()
+        {
+            CleanupHostOwnedSearch(notifyInterrupted: true, preferDeferredDestroy: false);
+        }
+
+        /// <summary>
+        /// Central Host cleanup: clears Busy/Pending, destroys Host TEMP runner (stops its
+        /// coroutine), and optionally notifies interruption. Idempotent.
+        /// Used by normal completion, write/search failure, Play Mode interruption, and
+        /// object-destruction shutdown paths. Never reports WriteSucceeded=true.
+        /// </summary>
+        private static void CleanupHostOwnedSearch(
+            bool notifyInterrupted,
+            bool preferDeferredDestroy = false,
+            string interruptStatus = null)
+        {
+            var shouldNotify = notifyInterrupted && IsSearchBusy;
+            var source = SessionState.GetString(SourceKey, SourceMenu);
+
+            FinishBusy();
+            DestroyTempRunnerIfPresent(preferDeferredDestroy);
+
+            if (!shouldNotify)
+            {
+                return;
+            }
+
+            NotifyComplete(
+                new GhostSearchCompletion(
+                    source,
+                    null,
+                    default,
+                    default,
+                    false,
+                    interruptStatus ?? InterruptedStatus));
+        }
+
+        private static void DestroyTempRunnerIfPresent(bool preferDeferredDestroy = false)
+        {
+            var useDeferred = preferDeferredDestroy || EditorApplication.isPlayingOrWillChangePlaymode;
+            var existing = GameObject.Find(GoName);
+            if (existing != null)
+            {
+                DestroyHostObject(existing, useDeferred);
+            }
+
+            // DontDestroyOnLoad + HideFlags.DontSave can survive Find in edge cases.
+            var all = Resources.FindObjectsOfTypeAll<GameObject>();
+            for (var i = 0; i < all.Length; i++)
+            {
+                var go = all[i];
+                if (go != null && go.name == GoName)
                 {
-                    FinishBusy();
+                    DestroyHostObject(go, useDeferred);
                 }
+            }
+        }
+
+        private static void DestroyHostObject(GameObject go, bool useDeferred)
+        {
+            if (useDeferred)
+            {
+                UnityEngine.Object.Destroy(go);
+            }
+            else
+            {
+                UnityEngine.Object.DestroyImmediate(go);
             }
         }
 
@@ -138,11 +229,7 @@ namespace BugCam.Editor
             EpsilonSearchStrategy strategy,
             Vector3 axis)
         {
-            var existing = GameObject.Find(GoName);
-            if (existing != null)
-            {
-                UnityEngine.Object.DestroyImmediate(existing);
-            }
+            DestroyTempRunnerIfPresent(preferDeferredDestroy: false);
 
             var go = new GameObject(GoName);
             UnityEngine.Object.DontDestroyOnLoad(go);
@@ -166,6 +253,16 @@ namespace BugCam.Editor
                 string source)
             {
                 StartCoroutine(Run(stepCount, strategy, axis, source));
+            }
+
+            private void OnDestroy()
+            {
+                // Torn down by Host cleanup or domain reload — ensure Busy/Pending clear
+                // without emitting a second SearchCompleted (interrupt notify owns that).
+                if (IsSearchBusy)
+                {
+                    FinishBusy();
+                }
             }
 
             private IEnumerator Run(
@@ -308,8 +405,7 @@ namespace BugCam.Editor
 
             private void Cleanup()
             {
-                FinishBusy();
-                Destroy(gameObject);
+                CleanupHostOwnedSearch(notifyInterrupted: false, preferDeferredDestroy: true);
             }
         }
 

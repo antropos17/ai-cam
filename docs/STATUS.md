@@ -128,6 +128,27 @@ EditMode +2 vs pr6-fix (`ConcurrentTryStartTowerSearchRejectsWhileBusy`, `BuildF
 
 **Unity MCP live:** unavailable (`instance_count=0`). GPU PNG / Window-button Scene View not re-run live. Day 2 not started.
 
+### 2026-08-03 — Block 1.5 PR #6 play-mode interrupt Host cleanup (`feat/block-1.5-ghost-visualization`)
+
+**Prior HEAD:** `3f2c93d6e6997f91ad0f431af6a5fc756ff0eb38`. **This fix commit / HEAD:** same as the commit that lands this entry (full SHA in PR #6 after push). **Base main:** `1bd10113eeeb8376ae31379b391e8c408d2884a8`.
+
+**Root cause:** `BugCamGhostEvidenceRunner_TEMP` uses `DontDestroyOnLoad` + `HideFlags.DontSave`, so exiting Play Mode mid-search left the TEMP runner alive and could leave Busy sticky / block a later Window search.
+
+**Cleanup:** single Host path `CleanupHostOwnedSearch` clears Busy/Pending, destroys Host TEMP runner (stops its coroutine), and on interruption notifies `SearchCompleted` with `WriteSucceeded=false` (never false success). Used by normal completion, write/search failure, `ExitingPlayMode`, and runner shutdown. Deferred `Destroy` during Play Mode exit; hard-sweep leftovers on `EnteredEditMode`. Deterministic EditMode seam: `CleanupInterruptedSearchForTests` (+ `AllowPlayModeEntry` for restart without flipping play mode).
+
+**Regression:** `PlayModeInterruptCleanupDestroysTempRunnerAndAllowsRestart` — TEMP present → interrupt cleanup → TEMP gone, Busy/Pending false, interruption notify once, idempotent second cleanup, subsequent `TryStartTowerSearch` accepted.
+
+**VERIFIED FACT — batchmode Unity `6000.3.21f1`** (`run-checkpoint.ps1 -Suite All -EvidenceDir Library\BugCamEvidence\Block1.5-pr6-interrupt-fix`, exit 0):
+
+| Suite | total | passed | failed | result | XML |
+|---|---|---|---|---|---|
+| EditMode | 93 | 93 | 0 | Passed | `Library/BugCamEvidence/Block1.5-pr6-interrupt-fix/EditMode.xml` |
+| PlayMode | 21 | 21 | 0 | Passed | `Library/BugCamEvidence/Block1.5-pr6-interrupt-fix/PlayMode.xml` |
+
+EditMode +1 vs leftover-fix2 (`PlayModeInterruptCleanupDestroysTempRunnerAndAllowsRestart`). PlayMode unchanged at 21.
+
+**Unity MCP live interrupt (editor `6000.3.21f1`):** Physics Simulation Mode=Script; Enhanced Determinism=OFF. Ghost Visualization Window/`TryStartTowerSearch` started → interrupted at update frame 2 while Busy+TEMP → TEMP gone, Busy/Pending false, no Host TEMP / BugCamGhost / BugCam RT/material leaks, sceneCount=1. Immediate second search completed `WriteSucceeded=true`, verdict `THRESHOLD BRACKET FOUND`, evidence `Library/BugCamEvidence/Runs/ghost-20260803T051155871-body49-X-AscendFromStart` (four GPU PNGs written). Prior run `ghost-20260803T042655079-body49-X-AscendFromStart` four PNGs remain intact. Day 2 not started.
+
 ### 2026-08-02 — Block 1.4 adaptive epsilon search (`feat/block-1.4-epsilon-search`)
 
 **Implementation:** step-driven `EpsilonSearch` (`TryGetNextProbe` / `SubmitProbeResult`) + `EpsilonSearchRunner` (sequential harness probes, scene-cleanup wait). Ladder → monotonicity gate → exponential (strategy) → bisection → fan. Retains full `RunResult` frames for baseline + exactly 15 fan runs; compact summaries elsewhere. Fan above search ceiling marked `OutsideSearchRange` (no silent clamp). Search range vs characterization range reported separately. Never claims an exact mathematical threshold.

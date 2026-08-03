@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.IO;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Reflection;
 using System.Security.Cryptography;
 using NUnit.Framework;
@@ -667,6 +668,148 @@ namespace BugCam.Tests
                 SessionState.SetBool(busyKey, false);
                 SessionState.SetBool(pendingKey, false);
             }
+        }
+
+        [Test]
+        public void PlayModeInterruptCleanupDestroysTempRunnerAndAllowsRestart()
+        {
+            const string busyKey = "BugCam.GhostSearch.Busy";
+            const string pendingKey = "BugCam.GhostHost.Pending";
+            const string goName = "BugCamGhostEvidenceRunner_TEMP";
+
+            var hostType = Type.GetType("BugCam.Editor.GhostEvidencePlayModeHost, BugCam.Editor");
+            Assert.That(hostType, Is.Not.Null);
+
+            var cleanup = hostType.GetMethod(
+                "CleanupInterruptedSearchForTests",
+                BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.That(
+                cleanup,
+                Is.Not.Null,
+                "Host must expose CleanupInterruptedSearchForTests seam.");
+
+            var allowPlayModeEntry = hostType.GetField(
+                "AllowPlayModeEntry",
+                BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.That(allowPlayModeEntry, Is.Not.Null);
+
+            var tryStart = hostType.GetMethod(
+                "TryStartTowerSearch",
+                BindingFlags.Public | BindingFlags.Static);
+            Assert.That(tryStart, Is.Not.Null);
+
+            var searchCompleted = hostType.GetEvent("SearchCompleted");
+            Assert.That(searchCompleted, Is.Not.Null);
+
+            var completionType = Type.GetType("BugCam.Editor.GhostSearchCompletion, BugCam.Editor");
+            Assert.That(completionType, Is.Not.Null);
+
+            var previousAllow = (bool)allowPlayModeEntry.GetValue(null);
+            var holder = new InterruptCompletionHolder();
+            var handler = BuildSearchCompletedHandler(completionType, holder);
+
+            SessionState.SetBool(busyKey, false);
+            SessionState.SetBool(pendingKey, false);
+            cleanup.Invoke(null, null);
+
+            try
+            {
+                searchCompleted.AddEventHandler(null, handler);
+
+                var runner = new GameObject(goName);
+                runner.hideFlags = HideFlags.DontSave;
+                Assert.That(
+                    GameObject.Find(goName),
+                    Is.Not.Null,
+                    "Host runner must exist while search is active.");
+
+                SessionState.SetBool(busyKey, true);
+                SessionState.SetBool(pendingKey, true);
+                Assert.That(SessionState.GetBool(busyKey, false), Is.True);
+
+                cleanup.Invoke(null, null);
+
+                Assert.That(
+                    GameObject.Find(goName),
+                    Is.Null,
+                    "Interrupt cleanup must destroy BugCamGhostEvidenceRunner_TEMP.");
+                var leftovers = Resources.FindObjectsOfTypeAll<GameObject>()
+                    .Where(go => go != null && go.name == goName)
+                    .ToArray();
+                Assert.That(
+                    leftovers,
+                    Is.Empty,
+                    "No Host TEMP runner may remain after interrupt cleanup.");
+                Assert.That(SessionState.GetBool(busyKey, false), Is.False, "Busy must clear.");
+                Assert.That(SessionState.GetBool(pendingKey, false), Is.False, "Pending must clear.");
+                Assert.That(holder.Count, Is.EqualTo(1), "Interrupt must notify once.");
+                Assert.That(holder.Last, Is.Not.Null);
+                Assert.That(
+                    Prop<bool>(holder.Last, "WriteSucceeded"),
+                    Is.False,
+                    "Interrupt must not emit SearchCompleted as success.");
+                Assert.That(
+                    Prop<string>(holder.Last, "Status"),
+                    Does.Contain("Interrupted"));
+
+                cleanup.Invoke(null, null);
+                Assert.That(GameObject.Find(goName), Is.Null);
+                Assert.That(SessionState.GetBool(busyKey, false), Is.False);
+                Assert.That(SessionState.GetBool(pendingKey, false), Is.False);
+                Assert.That(
+                    holder.Count,
+                    Is.EqualTo(1),
+                    "Repeated cleanup must not emit another SearchCompleted.");
+
+                allowPlayModeEntry.SetValue(null, false);
+                var strategyType = Type.GetType("BugCam.Core.EpsilonSearchStrategy, BugCam.Core");
+                var strategy = Enum.ToObject(strategyType, 0);
+                var args = new object[]
+                {
+                    32,
+                    strategy,
+                    Vector3.right,
+                    "interrupt-regression",
+                    null
+                };
+                var accepted = (bool)tryStart.Invoke(null, args);
+                Assert.That(
+                    accepted,
+                    Is.True,
+                    "After interrupt cleanup, TryStartTowerSearch must accept.");
+                Assert.That(args[4], Is.Null);
+                Assert.That(
+                    SessionState.GetBool(busyKey, false),
+                    Is.True,
+                    "Accepted restart must mark Busy.");
+            }
+            finally
+            {
+                searchCompleted.RemoveEventHandler(null, handler);
+                allowPlayModeEntry.SetValue(null, previousAllow);
+                cleanup.Invoke(null, null);
+                SessionState.SetBool(busyKey, false);
+                SessionState.SetBool(pendingKey, false);
+            }
+        }
+
+        private sealed class InterruptCompletionHolder
+        {
+            public int Count;
+            public object Last;
+        }
+
+        private static Delegate BuildSearchCompletedHandler(Type completionType, InterruptCompletionHolder holder)
+        {
+            var param = Expression.Parameter(completionType, "completion");
+            var holderConst = Expression.Constant(holder);
+            var countField = Expression.Field(holderConst, nameof(InterruptCompletionHolder.Count));
+            var lastField = Expression.Field(holderConst, nameof(InterruptCompletionHolder.Last));
+            var body = Expression.Block(
+                Expression.Assign(countField, Expression.Add(countField, Expression.Constant(1))),
+                Expression.Assign(lastField, Expression.Convert(param, typeof(object))));
+            return Expression.Lambda(typeof(Action<>).MakeGenericType(completionType), body, param)
+                .Compile();
         }
 
         [Test]
