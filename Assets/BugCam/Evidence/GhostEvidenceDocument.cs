@@ -28,20 +28,147 @@ namespace BugCam.Evidence
     }
 
     /// <summary>
+    /// Live physics-settings snapshot taken at evidence-build time from the running
+    /// Unity instance — never sourced from BugCam constants. Runtime-readable values
+    /// come from <c>Physics.*</c> / <c>Time.fixedDeltaTime</c>; editor-serialized values
+    /// (enhanced determinism, threading mode) must be supplied by an Editor-side caller.
+    /// False has-flags are honest unavailability — never fabricate.
+    /// </summary>
+    public readonly struct PhysicsRuntimeSnapshot
+    {
+        public PhysicsRuntimeSnapshot(
+            bool captured,
+            float fixedDeltaTime,
+            string simulationMode,
+            int solverIterations,
+            int solverVelocityIterations,
+            float defaultContactOffset,
+            float defaultMaxDepenetrationVelocity,
+            float sleepThreshold,
+            float bounceThreshold,
+            Vector3 gravity,
+            bool hasEnhancedDeterminism,
+            bool enhancedDeterminism,
+            bool hasThreadingMode,
+            int threadingModeSerialized,
+            string threadingModeName)
+        {
+            Captured = captured;
+            FixedDeltaTime = fixedDeltaTime;
+            SimulationMode = simulationMode ?? string.Empty;
+            SolverIterations = solverIterations;
+            SolverVelocityIterations = solverVelocityIterations;
+            DefaultContactOffset = defaultContactOffset;
+            DefaultMaxDepenetrationVelocity = defaultMaxDepenetrationVelocity;
+            SleepThreshold = sleepThreshold;
+            BounceThreshold = bounceThreshold;
+            Gravity = gravity;
+            HasEnhancedDeterminism = hasEnhancedDeterminism;
+            EnhancedDeterminism = enhancedDeterminism;
+            HasThreadingMode = hasThreadingMode;
+            ThreadingModeSerialized = threadingModeSerialized;
+            ThreadingModeName = threadingModeName ?? string.Empty;
+        }
+
+        public bool Captured { get; }
+
+        public float FixedDeltaTime { get; }
+
+        public string SimulationMode { get; }
+
+        public int SolverIterations { get; }
+
+        public int SolverVelocityIterations { get; }
+
+        public float DefaultContactOffset { get; }
+
+        public float DefaultMaxDepenetrationVelocity { get; }
+
+        public float SleepThreshold { get; }
+
+        public float BounceThreshold { get; }
+
+        public Vector3 Gravity { get; }
+
+        public bool HasEnhancedDeterminism { get; }
+
+        public bool EnhancedDeterminism { get; }
+
+        public bool HasThreadingMode { get; }
+
+        public int ThreadingModeSerialized { get; }
+
+        public string ThreadingModeName { get; }
+
+        public static PhysicsRuntimeSnapshot Empty =>
+            new PhysicsRuntimeSnapshot(
+                false, 0f, string.Empty, 0, 0, 0f, 0f, 0f, 0f, Vector3.zero,
+                false, false, false, 0, string.Empty);
+
+        /// <summary>Capture the runtime-readable values only; editor-serialized values unavailable.</summary>
+        public static PhysicsRuntimeSnapshot CaptureLive()
+        {
+            return CaptureLive(false, false, false, 0, string.Empty);
+        }
+
+        /// <summary>
+        /// Capture the runtime-readable values live and merge editor-serialized values
+        /// read by an Editor-side caller (e.g. PhysicsSettingsProbe).
+        /// </summary>
+        public static PhysicsRuntimeSnapshot CaptureLive(
+            bool hasEnhancedDeterminism,
+            bool enhancedDeterminism,
+            bool hasThreadingMode,
+            int threadingModeSerialized,
+            string threadingModeName)
+        {
+            return new PhysicsRuntimeSnapshot(
+                true,
+                Time.fixedDeltaTime,
+                Physics.simulationMode.ToString(),
+                Physics.defaultSolverIterations,
+                Physics.defaultSolverVelocityIterations,
+                Physics.defaultContactOffset,
+                Physics.defaultMaxDepenetrationVelocity,
+                Physics.sleepThreshold,
+                Physics.bounceThreshold,
+                Physics.gravity,
+                hasEnhancedDeterminism,
+                enhancedDeterminism,
+                hasThreadingMode,
+                threadingModeSerialized,
+                threadingModeName);
+        }
+    }
+
+    /// <summary>
     /// §14 identity fields. Empty strings are honest when a value is unavailable.
     /// </summary>
     public readonly struct GhostRunEnvironment
     {
+        // Keep the 4-parameter signature intact: EditMode tests construct this struct
+        // through reflection with exactly these four argument types.
         public GhostRunEnvironment(
             string unityVersion,
             string gitCommitSha,
             string gitBranch,
             string scenePath)
+            : this(unityVersion, gitCommitSha, gitBranch, scenePath, default)
+        {
+        }
+
+        public GhostRunEnvironment(
+            string unityVersion,
+            string gitCommitSha,
+            string gitBranch,
+            string scenePath,
+            PhysicsRuntimeSnapshot physics)
         {
             UnityVersion = unityVersion ?? string.Empty;
             GitCommitSha = gitCommitSha ?? string.Empty;
             GitBranch = gitBranch ?? string.Empty;
             ScenePath = scenePath ?? string.Empty;
+            Physics = physics;
         }
 
         public string UnityVersion { get; }
@@ -52,14 +179,31 @@ namespace BugCam.Evidence
 
         public string ScenePath { get; }
 
+        /// <summary>
+        /// Live physics snapshot; <c>default</c> (Captured=false) when the caller
+        /// did not capture one — the writer emits honest nulls then.
+        /// </summary>
+        public PhysicsRuntimeSnapshot Physics { get; }
+
         public static GhostRunEnvironment Empty =>
             new GhostRunEnvironment(string.Empty, string.Empty, string.Empty, string.Empty);
 
         /// <summary>
-        /// Capture Unity version plus optional git env vars / scene path.
-        /// Empty string when unavailable — never fabricate.
+        /// Capture Unity version, live physics values, plus optional git env vars /
+        /// scene path. Empty string when unavailable — never fabricate.
         /// </summary>
         public static GhostRunEnvironment Capture(string scenePath = null)
+        {
+            return Capture(scenePath, PhysicsRuntimeSnapshot.CaptureLive());
+        }
+
+        /// <summary>
+        /// Capture with a caller-supplied physics snapshot (Editor callers merge
+        /// editor-serialized values the runtime API cannot read).
+        /// </summary>
+        public static GhostRunEnvironment Capture(
+            string scenePath,
+            PhysicsRuntimeSnapshot physics)
         {
             var commit = Environment.GetEnvironmentVariable("BUGCAM_GIT_COMMIT") ?? string.Empty;
             if (string.IsNullOrEmpty(commit))
@@ -77,7 +221,8 @@ namespace BugCam.Evidence
                 Application.unityVersion ?? string.Empty,
                 commit,
                 branch,
-                scenePath ?? string.Empty);
+                scenePath ?? string.Empty,
+                physics);
         }
     }
 

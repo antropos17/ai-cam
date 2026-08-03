@@ -244,6 +244,35 @@ namespace BugCam.Editor
             SessionState.SetBool(PendingKey, false);
         }
 
+        /// <summary>
+        /// Live physics snapshot for the evidence capsule. Runtime values always
+        /// capture; editor-serialized values (threading mode, enhanced determinism)
+        /// come from <see cref="PhysicsSettingsProbe"/> and degrade to honest
+        /// unavailability (nulls in manifest.json) if the probe throws.
+        /// </summary>
+        private static PhysicsRuntimeSnapshot CapturePhysicsSnapshot()
+        {
+            try
+            {
+                var threadingSerialized = PhysicsSettingsProbe.ReadThreadingModeSerialized();
+                var threadingName = PhysicsSettingsProbe.ReadThreadingMode().ToString();
+                var enhanced = PhysicsSettingsProbe.ReadEnhancedDeterminism();
+                return PhysicsRuntimeSnapshot.CaptureLive(
+                    true,
+                    enhanced,
+                    true,
+                    threadingSerialized,
+                    threadingName);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning(
+                    "BugCam: editor-serialized physics values unavailable for evidence " +
+                    "snapshot (" + ex.Message + "); manifest will carry nulls for them.");
+                return PhysicsRuntimeSnapshot.CaptureLive();
+            }
+        }
+
         private sealed class GhostEvidenceRunnerBehaviour : MonoBehaviour
         {
             public void Begin(
@@ -274,7 +303,8 @@ namespace BugCam.Editor
                 var settings = DivergenceSettings.CreateDefault();
                 var identity = new GhostSearchIdentity(49, axis.normalized, strategy);
                 var environment = GhostRunEnvironment.Capture(
-                    UnityEngine.SceneManagement.SceneManager.GetActiveScene().path);
+                    UnityEngine.SceneManagement.SceneManager.GetActiveScene().path,
+                    CapturePhysicsSnapshot());
                 var search = new EpsilonSearch(
                     settings.ToSearchSettings(),
                     identity.TargetBodyId,
