@@ -21,6 +21,7 @@ namespace BugCam.Editor
         private const string PendingKey = "BugCam.GhostHost.Pending";
         private const string BusyKey = "BugCam.GhostSearch.Busy";
         private const string SourceKey = "BugCam.GhostHost.Source";
+        private const string EnteredPlayModeKey = "BugCam.GhostHost.EnteredPlayMode";
         private const string InterruptedStatus =
             "Interrupted: Play Mode exited before search completed.";
 
@@ -108,6 +109,10 @@ namespace BugCam.Editor
                 SessionState.SetFloat("BugCam.GhostHost.AxisZ", searchAxis.z);
                 if (AllowPlayModeEntry)
                 {
+                    // Host-initiated Play Mode entry: remember it so completion can exit
+                    // the Play Mode the host itself started — and only that one. A search
+                    // launched inside a user-started Play Mode session never sets this.
+                    SessionState.SetBool(EnteredPlayModeKey, true);
                     EditorApplication.isPlaying = true;
                 }
 
@@ -125,6 +130,9 @@ namespace BugCam.Editor
             }
             else if (state == PlayModeStateChange.ExitingPlayMode)
             {
+                // Play Mode is ending regardless of who requested it — drop the marker so a
+                // stale flag can never auto-exit a future user-started play session.
+                SessionState.SetBool(EnteredPlayModeKey, false);
                 // Interrupted or abandoned run: clear Busy/Pending even if PendingKey
                 // was already cleared when the runner started (mid-run exit).
                 // Runner uses DontDestroyOnLoad + DontSave, so Play Mode exit alone
@@ -250,6 +258,27 @@ namespace BugCam.Editor
         {
             SessionState.SetBool(BusyKey, false);
             SessionState.SetBool(PendingKey, false);
+        }
+
+        /// <summary>
+        /// Exit the Play Mode session the host itself started, once the completion has been
+        /// delivered. Must run AFTER Busy is cleared (Cleanup): the ExitingPlayMode handler
+        /// then sees Busy=false and cannot emit a false "Interrupted" completion. A search
+        /// that ran inside a user-started Play Mode session never set the marker, so the
+        /// user's session is left untouched.
+        /// </summary>
+        private static void ExitHostEnteredPlayMode()
+        {
+            if (!SessionState.GetBool(EnteredPlayModeKey, false))
+            {
+                return;
+            }
+
+            SessionState.SetBool(EnteredPlayModeKey, false);
+            if (EditorApplication.isPlaying)
+            {
+                EditorApplication.isPlaying = false;
+            }
         }
 
         /// <summary>
@@ -428,6 +457,7 @@ namespace BugCam.Editor
                             false,
                             status));
                     Cleanup();
+                    ExitHostEnteredPlayMode();
                     yield break;
                 }
 
@@ -482,6 +512,7 @@ namespace BugCam.Editor
                         write.Succeeded,
                         status));
                 Cleanup();
+                ExitHostEnteredPlayMode();
             }
 
             private void Cleanup()

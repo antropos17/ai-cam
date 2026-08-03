@@ -282,14 +282,8 @@ namespace BugCam.Editor
 
             DrawStatusLine(state);
 
-            if (!_tutorialHidden && state != WindowState.Searching)
-            {
-                DrawTutorial();
-            }
-
-            DrawSetup(state);
-            DrawMainButton(state);
-
+            // Result (or live progress) sits directly under the status line — the verdict
+            // is the product; setup and the intro live below it.
             if (state == WindowState.Searching)
             {
                 DrawProgress();
@@ -303,28 +297,40 @@ namespace BugCam.Editor
                 DrawPriorRunRow();
             }
 
+            if (!_tutorialHidden && state != WindowState.Searching)
+            {
+                DrawTutorial();
+            }
+
+            DrawSetup(state);
+            DrawMainButton(state);
+
             EditorGUILayout.EndScrollView();
         }
 
         private void DrawStatusLine(WindowState state)
         {
             string status;
-            switch (state)
+            if (state == WindowState.Searching)
             {
-                case WindowState.Searching:
-                    status = _interrupting
-                        ? StatusInterrupting
-                        : (_hasProgress ? _progressStatusLine : StatusEnteringPlayMode);
-                    break;
-                case WindowState.Idle:
-                    status = StatusIdle;
-                    break;
-                case WindowState.Done:
-                    status = _document != null ? _verdictText : _completionStatus;
-                    break;
-                default:
-                    status = _readyStatus;
-                    break;
+                status = _interrupting
+                    ? StatusInterrupting
+                    : (_hasProgress ? _progressStatusLine : StatusEnteringPlayMode);
+            }
+            else if (_hasCompletion)
+            {
+                // The verdict owns the status line even while a transient blocker is active
+                // (e.g. the host-initiated Play Mode exit right after completion) — the
+                // blocker still renders as a reason row under the disabled button.
+                status = _document != null ? _verdictText : _completionStatus;
+            }
+            else if (state == WindowState.Idle)
+            {
+                status = StatusIdle;
+            }
+            else
+            {
+                status = _readyStatus;
             }
 
             EditorGUILayout.BeginHorizontal();
@@ -883,7 +889,8 @@ namespace BugCam.Editor
                 {
                     rows.Add(new ResultRow(
                         "Усиление",
-                        primary.Amplification.ToString("R", CultureInfo.InvariantCulture) + "×"));
+                        Math.Round((double)primary.Amplification)
+                            .ToString("0", CultureInfo.InvariantCulture) + "×"));
                 }
 
                 rows.Add(new ResultRow(
@@ -944,7 +951,7 @@ namespace BugCam.Editor
                 "Шаги физики × BugCamConstants.FixedStep (" +
                 BugCamConstants.FixedStep.ToString("R", CultureInfo.InvariantCulture) + " с). " +
                 _stepCount.ToString(CultureInfo.InvariantCulture) + " шага(-ов) = " +
-                seconds.ToString("R", CultureInfo.InvariantCulture) + " с симуляции.");
+                ThreeSignificant(seconds) + " с симуляции.");
         }
 
         private void RebuildSetupSummary()
@@ -988,16 +995,66 @@ namespace BugCam.Editor
             }
         }
 
+        // Display formatting only (SPEC §17 style: "0.27 mm", "1.74 m", "6444×").
+        // Full "R" precision stays in the evidence bundle and metrics files.
+
         private static string FormatRange(float floorMetres, float ceilingMetres)
         {
-            return floorMetres.ToString("R", CultureInfo.InvariantCulture) + " … " +
-                   ceilingMetres.ToString("R", CultureInfo.InvariantCulture) + " m";
+            // One shared unit per range, chosen by the larger bound, so the two numbers
+            // stay directly comparable ("0.1 … 10 mm", never "100 µm … 10 mm").
+            var unitScale = UnitFor(Math.Max(Math.Abs(floorMetres), Math.Abs(ceilingMetres)), out var unitName);
+            return ThreeSignificant(floorMetres * unitScale) + " … " +
+                   ThreeSignificant(ceilingMetres * unitScale) + " " + unitName;
         }
 
         private static string FormatMetres(float metres)
         {
-            return metres.ToString("R", CultureInfo.InvariantCulture) + " m (" +
-                   (metres * 1000f).ToString("R", CultureInfo.InvariantCulture) + " mm)";
+            var unitScale = UnitFor(Math.Abs(metres), out var unitName);
+            return ThreeSignificant(metres * unitScale) + " " + unitName;
+        }
+
+        private static float UnitFor(float absMetres, out string unitName)
+        {
+            if (absMetres >= 0.1f || absMetres == 0f)
+            {
+                unitName = "m";
+                return 1f;
+            }
+
+            if (absMetres >= 0.0001f)
+            {
+                unitName = "mm";
+                return 1000f;
+            }
+
+            unitName = "µm";
+            return 1000000f;
+        }
+
+        private static string ThreeSignificant(double value)
+        {
+            if (value == 0d)
+            {
+                return "0";
+            }
+
+            var abs = Math.Abs(value);
+            var digits = (int)Math.Floor(Math.Log10(abs)) + 1;
+            if (digits >= 3)
+            {
+                var scale = Math.Pow(10d, digits - 3);
+                return (Math.Round(value / scale) * scale)
+                    .ToString("0", CultureInfo.InvariantCulture);
+            }
+
+            var decimals = 3 - digits;
+            if (decimals > 15)
+            {
+                decimals = 15;
+            }
+
+            return Math.Round(value, decimals)
+                .ToString("0." + new string('#', decimals), CultureInfo.InvariantCulture);
         }
     }
 }
