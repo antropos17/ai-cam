@@ -35,8 +35,50 @@ namespace BugCam.Tests
             Assert.That(Prop<bool>(result, "Succeeded"), Is.True);
             Assert.That(Prop<bool>(result, "HasSignificantDivergence"), Is.False);
             Assert.That(Prop<int>(result, "FirstDivergenceFrame"), Is.EqualTo(-1));
+            Assert.That(Prop<int>(result, "FirstDivergenceBodyId"), Is.EqualTo(-1));
             Assert.That(Prop<float>(result, "MaxSpreadMetres"), Is.EqualTo(0f));
             Assert.That(Prop<int[]>(result, "AffectedBodyIds"), Is.Empty);
+        }
+
+        [Test]
+        public void FirstDivergenceBodyIdIsArgMaxAtFirstFrameIndependentOfMaxSpread()
+        {
+            // Bodies 1,2,49: at first-div frame body2 leads; later body49 owns global max.
+            const int steps = 12;
+            const int bodies = 3;
+            var ids = new[] { 1, 2, 49 };
+            var baseline = BuildFrames(steps, bodies, null);
+            var perturbed = BuildFrames(steps, bodies, (step, body, offset, buffer) =>
+            {
+                if (step < 2)
+                {
+                    return;
+                }
+
+                if (body == 0)
+                {
+                    buffer[offset + 1] = 0.5f;
+                }
+                else if (body == 1)
+                {
+                    buffer[offset + 1] = 1.2f;
+                }
+                else
+                {
+                    buffer[offset + 1] = step < 7 ? 0.4f : 5.0f;
+                }
+            });
+
+            var result = Analyze(baseline, perturbed, 0.001f, null, null, ids);
+            Assert.That(Prop<bool>(result, "Succeeded"), Is.True, Prop<string>(result, "ErrorReason"));
+            Assert.That(Prop<bool>(result, "HasSignificantDivergence"), Is.True);
+            Assert.That(Prop<int>(result, "FirstDivergenceFrame"), Is.EqualTo(2));
+            Assert.That(Prop<int>(result, "FirstDivergenceBodyId"), Is.EqualTo(2));
+            Assert.That(Prop<int>(result, "MaxSpreadBodyId"), Is.EqualTo(49));
+            Assert.That(Prop<int[]>(result, "AffectedBodyIds")[0], Is.EqualTo(1));
+            Assert.That(
+                Prop<int>(result, "FirstDivergenceBodyId"),
+                Is.Not.EqualTo(Prop<int>(result, "MaxSpreadBodyId")));
         }
 
         [Test]

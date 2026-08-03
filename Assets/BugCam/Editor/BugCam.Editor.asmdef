@@ -2,7 +2,8 @@
     "name": "BugCam.Editor",
     "rootNamespace": "BugCam.Editor",
     "references": [
-        "BugCam.Core"
+        "BugCam.Core",
+        "BugCam.Evidence"
     ],
     "includePlatforms": [
         "Editor"

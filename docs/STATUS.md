@@ -3,9 +3,12 @@
 > Updated by the agent after every completed block. This file is the memory between sessions.
 
 ## Current position
-- Active block: 1.4 (adaptive epsilon search on `feat/block-1.4-epsilon-search`)
-- Day 1 checkpoint: NOT PASSED (needs Block 1.5 ghost visualization for Scene View fan; success-path `EpsilonSearchReport` is **not** logged — only cleanup-timeout failures call `Debug.LogError(EpsilonSearchReport.Format(...))`, so 1.4 does **not** supply threshold/fan console numbers on the success path)
-- Day 2 checkpoint: NOT PASSED
+- Active block: 1.5 (ghost visualization on `feat/block-1.5-ghost-visualization`)
+- Day 1 checkpoint: PASSED (Scene View fan + success-path honest reports + evidence bundle)
+- Day 2 checkpoint: NOT PASSED — Day 2 not started (no RetroPlayer, MP4, evidence cameras, camera-plan, cockpit, SceneSight)
+- PR #6 prior code-fix SHA: `df38791d8baab95fc9d0850bae8fcf478318ae77` (Window→Host nested coroutine, canonical runs/*.json, null-gated primary metrics, FirstDivergenceBodyId)
+- PR #6 prior docs SHA: `d0ff85418cee9c9cd05660ca69dead1e3a632648` (STATUS tip bookkeeping only — not a code tip)
+- PR #6 leftover-fix HEAD: this leftover-fix2 commit on `feat/block-1.5-ghost-visualization` (full SHA in PR #6 body after push)
 
 ## Completed blocks
 | Block | Result | Verification | Commit |
@@ -14,7 +17,8 @@
 | 1.1 | TowerScene A/B/A′ determinism probe in both threading modes + Editor restart | See Evidence log 2026-08-02 | squash `91ae29d` (#2) |
 | 1.2 | StateRecorder + RunResult + kinematic transform replay VERIFY | See Evidence log 2026-08-02 (Block 1.2) | squash `a90765a` (#3) |
 | 1.3 | DivergenceSettings + DivergenceEngine synthetic + RunResult integration + review-fix | See Evidence log 2026-08-02 (Block 1.3 review-fix) | squash `6d676ad` (#4) |
-| 1.4 | Adaptive epsilon search (step-driven) + partial PlayMode VERIFY (fail-closed bracket/fan + ±1 growth-step Ratio≤2; VERIFY (a) OPEN) | See Evidence log 2026-08-02 (Block 1.4 verify-fix) | feature `95ef465`; verify-fix/evidence code `8346e34`; docs honesty amend in this commit |
+| 1.4 | Adaptive epsilon search (step-driven) + partial PlayMode VERIFY (fail-closed bracket/fan + ±1 growth-step Ratio≤2; VERIFY (a) OPEN) | See Evidence log 2026-08-02 (Block 1.4 verify-fix) | merge SHA `1bd10113eeeb8376ae31379b391e8c408d2884a8` (#5) |
+| 1.5 | Ghost visualization + evidence bundle (`BugCam.Evidence` + Scene View drawer + Ghost Visualization window) | See Evidence log 2026-08-03 (pr6-fix2) | branch `feat/block-1.5-ghost-visualization` (PR #6 OPEN) |
 
 ## Open findings / blockers
 - RESOLVED (Block 1.4 design): fan samples may exceed `EpsilonCeiling` up to `1.2 × EpsilonCeiling`. Magnitudes are **not** silently clamped; every fan sample above the search ceiling is marked `OutsideSearchRange=true`. Search range and characterization range are reported separately.
@@ -24,6 +28,126 @@
 - RESOLVED (Block 1.1 measurement): TowerScene dual-threading A/B/A′ numbers exist under `Library/BugCamEvidence/Block1.1/` (gitignored). `m_ThreadingMode` restored to `0` after the controlled experiment.
 
 ## Evidence log
+
+### 2026-08-02 — Block 1.5 ghost visualization (`feat/block-1.5-ghost-visualization`)
+
+**Base:** Block 1.4 merge SHA `1bd10113eeeb8376ae31379b391e8c408d2884a8`.
+
+**Architecture:**
+- `Assets/BugCam/Evidence/` + `BugCam.Evidence.asmdef` (refs `BugCam.Core` only; no UnityEditor).
+- `BugCam.Editor` references `BugCam.Evidence`.
+- Core: zero edits — consumes `EpsilonSearchResult` / `RunResult` / `DivergenceEngine` / `DivergenceSettings.GhostBodyLimit`.
+- Builder re-Analyzes baseline vs each retained fan; STABLE ⇒ no fabricated fans; fan order multiplier-major × X/Y/Z; `OutsideSearchRange` preserved; search identity (targetBodyId, axis, strategy) captured at build time.
+- Ranking comparator: `PerBodyMaxPositionErrorMetres` desc, `bodyId` asc; limit 10; omit zero-error.
+- Scene View: `SceneView.duringSceneGui` + `Handles.DrawAAPolyLine`; menu `BugCam/Ghost Visualization`.
+- Evidence paths: `Library/BugCamEvidence/Runs/<run-id>/` + `Library/BugCamEvidence/Block1.5` checkpoint. Schema `BugCam.GhostEvidence` v1 (`metrics.json` for AI consume).
+- Honesty: no fake threshold when `HasThresholdEstimate=false`; `referenceIsExactThreshold` always false; amplification only when `AmplificationDefined`.
+- Day 2 not started.
+
+**How to run viz:** Unity menu `BugCam/Ghost Visualization` → Run / Load Ghost Search (Play Mode TowerScene search at step count 32 by default) → Scene View shows baseline/fans/markers → evidence written automatically. Alternate: `BugCam/Run Ghost Evidence (Tower / step 32)`.
+
+**AI consume:** `Library/BugCamEvidence/Runs/<run-id>/metrics.json` (`schemaVersion=1`, `kind=BugCam.GhostEvidence`).
+
+**VERIFIED FACT — batchmode Unity `6000.3.21f1`** (`run-checkpoint.ps1 -Suite All -EvidenceDir Library\BugCamEvidence\Block1.5`, exit 0):
+
+| Suite | total | passed | failed | result | XML |
+|---|---|---|---|---|---|
+| EditMode | 81 | 81 | 0 | Passed | `Library/BugCamEvidence/Block1.5/EditMode.xml` |
+| PlayMode | 20 | 20 | 0 | Passed | `Library/BugCamEvidence/Block1.5/PlayMode.xml` |
+
+EditMode +14 (`GhostEvidenceTests`). PlayMode +1 smoke (`GhostEvidencePlayModeTests`, FastStepCount=40 — separate from VERIFY step 32).
+
+**VERIFIED FACT — live Unity MCP** (project `X:\AI CAM\nimbalyst-local\bugcam`, editor `6000.3.21f1`):
+- Simulation Mode = Script; Enhanced Determinism = False.
+- Real Tower search (step 32, AscendFromStart, body 49, axis X) → verdict `THRESHOLD BRACKET FOUND`; success-path console `BUGCAM_BLOCK_1_4_EPSILON_SEARCH` + `BUGCAM_BLOCK_1_5_GHOST_EVIDENCE`.
+- Scene View session: 15 fans, 10 ranked bodies, 160 polylines, first-divergence + max-spread markers; `activeSceneDirty=false`; no leaked `BugCamGhost*` / `*_TEMP` GameObjects; sceneCount returned to 1; Play Mode exited cleanly.
+- Generated run evidence: `Library/BugCamEvidence/Runs/ghost-20260803T024343884-body49-X-AscendFromStart/` (+ checkpoint pointer under `Library/BugCamEvidence/Block1.5/`).
+- **CORRECTION — named PNGs in that run are NOT visual success:** `overview` / `first-divergence` / `max-spread` / `final` were byte-identical solid clear-color blanks (`#1F1F24`, same SHA256). Prior GL path omitted `Material.SetPass`, so lines never composited. Do not cite those PNGs as proof of distinct framing.
+
+### 2026-08-02 — Block 1.5 gate fix (first-div marker + screenshot compositing)
+
+**Historical note:** an earlier tip asserted first-div marker via `MaxSpreadBodyId` proxy. That was incorrect and is superseded by the 2026-08-03 pr6-fix entry (`FirstDivergenceBodyId`).
+
+**Screenshot capture:** `GhostScreenshotCapture` uses `Hidden/Internal-Colored` + `Material.SetPass(0)` before GL lines/markers; refuses solid clear-color frames (no blank PNG kept). EditMode contract `ScreenshotCaptureFailsClosedOnBlankOrWritesDistinctPngs` accepts honest omit under `-nographics`, or distinct hashes when GPU compositing succeeds. Named PNGs from GPU editor sessions are the only valid visual proof — not batchmode blanks.
+
+**Honesty:** failure-console assert requires both `thresholdEstimateMetres=null` and `succeeded=False`. Day 2 not started.
+
+**VERIFIED FACT — batchmode Unity `6000.3.21f1`** (`run-checkpoint.ps1 -Suite All -EvidenceDir Library\BugCamEvidence\Block1.5-review-fix-2`, exit 0):
+
+| Suite | total | passed | failed | result | XML |
+|---|---|---|---|---|---|
+| EditMode | 85 | 85 | 0 | Passed | `Library/BugCamEvidence/Block1.5-review-fix-2/EditMode.xml` |
+| PlayMode | 20 | 20 | 0 | Passed | `Library/BugCamEvidence/Block1.5-review-fix-2/PlayMode.xml` |
+
+EditMode +1 vs prior tip (`ScreenshotCaptureFailsClosedOnBlankOrWritesDistinctPngs`). Named GPU PNGs not regenerated this pass (no Unity MCP / interactive GPU editor); capture now omits under Null graphics instead of keeping `#1F1F24` blanks.
+
+**Day 2:** not started.
+
+### 2026-08-03 — Block 1.5 PR #6 merge-blocker fix (`feat/block-1.5-ghost-visualization`)
+
+**Base tip before fix:** `459e7ee586281cda62ae9c43eeba489ebdec6946`. **Fix tip:** `df38791d8baab95fc9d0850bae8fcf478318ae77`. **Base main:** `1bd10113eeeb8376ae31379b391e8c408d2884a8`.
+
+**Blockers fixed:**
+1. **Nested Editor coroutine:** removed broken `EditorCoroutineUtility`; Window routes through `GhostEvidencePlayModeHost` MonoBehaviour nested coroutines; shared `BugCam.GhostSearch.Busy` lock.
+2. **Evidence bundle:** writes `runs/baseline.json` + `runs/fan-XX.json` from canonical `BaselineRun`/`Fans[i].Run`; visual filenames `first-sustained-divergence.png` / `maximum-spread.png` / `final-state.png` / `overview.png`; console at `report/console-report.txt`; manifest lists relative paths + availability/status.
+3. **Fabricated primary metrics:** JSON null + `has*` when `!Success` / no significant divergence; panel shows `unavailable`; `FormatHonestSearchReport` gated on `document.Success`.
+4. **First-div marker:** Core `FirstDivergenceBodyId` (argmax |Δpos| @ first-div frame); GhostRenderer uses it; fixture proves first-div body ≠ MaxSpreadBodyId ≠ AffectedBodyIds[0].
+
+**Hardening:** both axes validated; fan ε tolerance fail-closed; OutsideSearchRange consistency fail-closed; session Clear unregisters Scene View callback; screenshot material destroyed on reload/quit.
+
+**VERIFIED FACT — batchmode Unity `6000.3.21f1`** (`run-checkpoint.ps1 -Suite All -EvidenceDir Library\BugCamEvidence\Block1.5-pr6-fix`, exit 0):
+
+| Suite | total | passed | failed | result | XML |
+|---|---|---|---|---|---|
+| EditMode | 90 | 90 | 0 | Passed | `Library/BugCamEvidence/Block1.5-pr6-fix/EditMode.xml` |
+| PlayMode | 21 | 21 | 0 | Passed | `Library/BugCamEvidence/Block1.5-pr6-fix/PlayMode.xml` |
+
+**Unity MCP live:** unavailable this pass (`instance_count=0`). GPU PNG regenerate / Window-button Scene View proof not re-run live; batchmode honesty + nested-coroutine / Host path contracts are green. Day 2 not started.
+
+### 2026-08-03 — Block 1.5 PR #6 leftover merge-blocker fix2 (`feat/block-1.5-ghost-visualization`)
+
+**Prior code-fix SHA:** `df38791d8baab95fc9d0850bae8fcf478318ae77`. **Prior docs SHA:** `d0ff85418cee9c9cd05660ca69dead1e3a632648`. **This leftover-fix commit / HEAD:** same as the commit that lands this entry (full SHA in PR #6 body after push). **Base main:** `1bd10113eeeb8376ae31379b391e8c408d2884a8`.
+
+**Blockers fixed:**
+1. **Busy lock:** Menu + all public starts route through `TryStartTowerSearch`; `StartTowerSearch` private; `ExitingPlayMode` calls `FinishBusy` when Busy (interrupted mid-run too); EditMode concurrent reject while busy.
+2. **BuildFailed honesty:** `GhostEvidenceReport.hasThresholdEstimate = search.HasThresholdEstimate && document.Success` (matches metrics); BuildFailed-over-bracket regression.
+3. **STATUS tip labeling:** distinguish prior code-fix SHA vs docs SHA; HEAD = this leftover-fix commit (no tip-chase of ancestors).
+4. **Host nested-coroutine soft-green:** Window→`TryStartTowerSearch` + Host `StartCoroutine` / `yield return runner.Run` source contracts (in-memory enumerator demo is footnote only).
+5. **Floor-divergent JSON honesty:** success path `DIVERGENT AT SEARCH FLOOR` → no threshold, fans retained (matches PlayMode FastStepCount=40).
+
+**Hardening:** Session `Register` gated on has-document; Window unsubscribes `SearchCompleted` in `OnDisable` (idempotent OnEnable).
+
+**VERIFIED FACT — batchmode Unity `6000.3.21f1`** (`run-checkpoint.ps1 -Suite All -EvidenceDir Library\BugCamEvidence\Block1.5-pr6-fix2`, exit 0):
+
+| Suite | total | passed | failed | result | XML |
+|---|---|---|---|---|---|
+| EditMode | 92 | 92 | 0 | Passed | `Library/BugCamEvidence/Block1.5-pr6-fix2/EditMode.xml` |
+| PlayMode | 21 | 21 | 0 | Passed | `Library/BugCamEvidence/Block1.5-pr6-fix2/PlayMode.xml` |
+
+EditMode +2 vs pr6-fix (`ConcurrentTryStartTowerSearchRejectsWhileBusy`, `BuildFailedOverBracketNullsThresholdInConsoleAndMetrics`, `FloorDivergentSuccessRetainsFansWithoutThresholdEstimate`; nested-coroutine contracts consolidated). PlayMode unchanged at 21 with FastStepCount=40 floor-divergent honesty asserts.
+
+**Unity MCP live:** unavailable (`instance_count=0`). GPU PNG / Window-button Scene View not re-run live. Day 2 not started.
+
+### 2026-08-03 — Block 1.5 PR #6 play-mode interrupt Host cleanup (`feat/block-1.5-ghost-visualization`)
+
+**Prior HEAD:** `3f2c93d6e6997f91ad0f431af6a5fc756ff0eb38`. **This fix commit / HEAD:** same as the commit that lands this entry (full SHA in PR #6 after push). **Base main:** `1bd10113eeeb8376ae31379b391e8c408d2884a8`.
+
+**Root cause:** `BugCamGhostEvidenceRunner_TEMP` uses `DontDestroyOnLoad` + `HideFlags.DontSave`, so exiting Play Mode mid-search left the TEMP runner alive and could leave Busy sticky / block a later Window search.
+
+**Cleanup:** single Host path `CleanupHostOwnedSearch` clears Busy/Pending, destroys Host TEMP runner (stops its coroutine), and on interruption notifies `SearchCompleted` with `WriteSucceeded=false` (never false success). Used by normal completion, write/search failure, `ExitingPlayMode`, and runner shutdown. Deferred `Destroy` during Play Mode exit; hard-sweep leftovers on `EnteredEditMode`. Deterministic EditMode seam: `CleanupInterruptedSearchForTests` (+ `AllowPlayModeEntry` for restart without flipping play mode).
+
+**Regression:** `PlayModeInterruptCleanupDestroysTempRunnerAndAllowsRestart` — TEMP present → interrupt cleanup → TEMP gone, Busy/Pending false, interruption notify once, idempotent second cleanup, subsequent `TryStartTowerSearch` accepted.
+
+**VERIFIED FACT — batchmode Unity `6000.3.21f1`** (`run-checkpoint.ps1 -Suite All -EvidenceDir Library\BugCamEvidence\Block1.5-pr6-interrupt-fix`, exit 0):
+
+| Suite | total | passed | failed | result | XML |
+|---|---|---|---|---|---|
+| EditMode | 93 | 93 | 0 | Passed | `Library/BugCamEvidence/Block1.5-pr6-interrupt-fix/EditMode.xml` |
+| PlayMode | 21 | 21 | 0 | Passed | `Library/BugCamEvidence/Block1.5-pr6-interrupt-fix/PlayMode.xml` |
+
+EditMode +1 vs leftover-fix2 (`PlayModeInterruptCleanupDestroysTempRunnerAndAllowsRestart`). PlayMode unchanged at 21.
+
+**Unity MCP live interrupt (editor `6000.3.21f1`):** Physics Simulation Mode=Script; Enhanced Determinism=OFF. Ghost Visualization Window/`TryStartTowerSearch` started → interrupted at update frame 2 while Busy+TEMP → TEMP gone, Busy/Pending false, no Host TEMP / BugCamGhost / BugCam RT/material leaks, sceneCount=1. Immediate second search completed `WriteSucceeded=true`, verdict `THRESHOLD BRACKET FOUND`, evidence `Library/BugCamEvidence/Runs/ghost-20260803T051155871-body49-X-AscendFromStart` (four GPU PNGs written). Prior run `ghost-20260803T042655079-body49-X-AscendFromStart` four PNGs remain intact. Day 2 not started.
 
 ### 2026-08-02 — Block 1.4 adaptive epsilon search (`feat/block-1.4-epsilon-search`)
 

@@ -22,6 +22,7 @@ namespace BugCam.Core
             float epsilonMetres,
             bool hasSignificantDivergence,
             int firstDivergenceFrame,
+            int firstDivergenceBodyId,
             float maxSpreadMetres,
             int maxSpreadStep,
             int maxSpreadBodyId,
@@ -38,6 +39,7 @@ namespace BugCam.Core
             EpsilonMetres = epsilonMetres;
             HasSignificantDivergence = hasSignificantDivergence;
             FirstDivergenceFrame = firstDivergenceFrame;
+            FirstDivergenceBodyId = firstDivergenceBodyId;
             MaxSpreadMetres = maxSpreadMetres;
             MaxSpreadStep = maxSpreadStep;
             MaxSpreadBodyId = maxSpreadBodyId;
@@ -67,6 +69,13 @@ namespace BugCam.Core
 
         /// <summary>First frame of the sustained qualifying window, or -1.</summary>
         public int FirstDivergenceFrame { get; }
+
+        /// <summary>
+        /// Stable body id (or body index) with largest |Δpos| at
+        /// <see cref="FirstDivergenceFrame"/>; bodyIndex ascending tie-break. -1 when unavailable.
+        /// Independent of <see cref="MaxSpreadBodyId"/>.
+        /// </summary>
+        public int FirstDivergenceBodyId { get; }
 
         /// <summary>Largest position error over all steps and bodies (metres).</summary>
         public float MaxSpreadMetres { get; }
@@ -108,6 +117,7 @@ namespace BugCam.Core
             float epsilonMetres,
             bool hasSignificantDivergence,
             int firstDivergenceFrame,
+            int firstDivergenceBodyId,
             float maxSpreadMetres,
             int maxSpreadStep,
             int maxSpreadBodyId,
@@ -125,6 +135,7 @@ namespace BugCam.Core
                 epsilonMetres,
                 hasSignificantDivergence,
                 firstDivergenceFrame,
+                firstDivergenceBodyId,
                 maxSpreadMetres,
                 maxSpreadStep,
                 maxSpreadBodyId,
@@ -135,7 +146,7 @@ namespace BugCam.Core
                 sceneScorePerStep);
         }
 
-        internal static DivergenceResult Failure(string errorReason)
+        public static DivergenceResult Failure(string errorReason)
         {
             return new DivergenceResult(
                 false,
@@ -144,6 +155,7 @@ namespace BugCam.Core
                 0,
                 0f,
                 false,
+                -1,
                 -1,
                 0f,
                 -1,
@@ -179,6 +191,7 @@ namespace BugCam.Core
             sb.AppendLine("epsilonMillimetres=" + Invariant(result.EpsilonMetres * 1000f));
             sb.AppendLine("hasSignificantDivergence=" + result.HasSignificantDivergence);
             sb.AppendLine("firstDivergenceFrame=" + result.FirstDivergenceFrame);
+            sb.AppendLine("firstDivergenceBodyId=" + result.FirstDivergenceBodyId);
             sb.AppendLine("maxSpreadMetres=" + Invariant(result.MaxSpreadMetres));
             sb.AppendLine("maxSpreadStep=" + result.MaxSpreadStep);
             sb.AppendLine("maxSpreadBodyId=" + result.MaxSpreadBodyId);

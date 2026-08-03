@@ -1,0 +1,16 @@
+{
+    "name": "BugCam.Evidence",
+    "rootNamespace": "BugCam.Evidence",
+    "references": [
+        "BugCam.Core"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
