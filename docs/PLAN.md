@@ -72,8 +72,13 @@ Rules:
 - VERIFY, two separate checks: (a) a repeat with identical configuration must be bit-identical — this is the determinism regression test, not a convergence test (**OPEN/partial in Block 1.4:** PlayMode currently asserts repeated **baseline-only** within ≤1e-6; bit-identical identical-config **search** repeat remains future work — do not reopen Core for it in this block); (b) **algorithm convergence** compares different starting strategies (`AscendFromStart` 0.01 mm ×2; `AscendFromCustomStart` 0.02 mm ×2; `DescendFromCeiling`) on the **same axis, same scene, same target body, and same configuration** — **proven in Block 1.4:** they land within ±1 **growth** step of each other (`EpsilonGrowthFactor=2` ⇒ Ratio≤2) at measured `VerifyStepCount=32`. Agreement within ±1 **bisection** step is **future/OPEN** (not claimed). X/Y/Z searches are directional characterization; their physical thresholds are reported but are **not** required to match.
 
 ### Block 1.5 — Ghost visualization
-- Trajectories of all runs: LineRenderer or DrawMeshInstanced ghosts. Baseline white, runs colored by divergence magnitude. Red sphere at first divergence. Show only top-10 diverging bodies + baseline.
-- Scene View gizmos are sufficient today.
+- Assembly `BugCam.Evidence` (refs `BugCam.Core` only; no UnityEditor). Editor refs Evidence.
+- `GhostEvidenceBuilder` is the single source of truth: re-Analyze baseline vs each retained fan; STABLE fabricates no fans; primary fan = 1.0× search-axis (tie-break index asc).
+- Ranking: `PerBodyMaxPositionErrorMetres` desc, `bodyId` asc; `GhostBodyLimit=10`; omit zero-error bodies.
+- Pure-data `GhostDrawSet` / `GhostRenderer`; Scene View via `SceneView.duringSceneGui` + `Handles.DrawAAPolyLine` (baseline white, fans colored, red first-divergence, max-spread marker). No permanent GameObjects; no scene dirty.
+- Evidence bundle under `Library/BugCamEvidence/Runs/<run-id>/` (`metrics.json`, `manifest.json`, `summary.md`, `report/console-report`, `visuals/`) plus `Library/BugCamEvidence/Block1.5` checkpoint pointer. Schema `BugCam.GhostEvidence` v1.
+- Editor window menu `BugCam/Ghost Visualization`. Success path logs `EpsilonSearchReport` + `GhostEvidenceReport`.
+- Day 2 (RetroPlayer / MP4 / evidence cameras / cockpit / SceneSight) not started.
 
 ### DAY 1 CHECKPOINT (hard gate)
 Console output with threshold / first divergence frame / spread / amplification / affected count AND a visible fan in Scene View. Do not start Day 2 without it.
