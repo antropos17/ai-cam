@@ -382,10 +382,33 @@ namespace BugCam.Editor
             return true;
         }
 
-        /// <summary>Millimetre display text for a canonical metre value.</summary>
+        /// <summary>
+        /// Millimetre display text for a canonical metre value: the SHORTEST plain decimal
+        /// string that parses back (via <see cref="TryParseMillimetresToMetres"/>) to the
+        /// bit-identical stored metres — so what the user typed is what they see
+        /// ("0.0001", never "0.000100000005"). Display layer only; storage, manifest and
+        /// evidence keep full precision (review decision 2026-08-03, A1).
+        /// </summary>
         public static string MillimetresTextFromMetres(float metres)
         {
-            return (metres * 1000f).ToString("R", CultureInfo.InvariantCulture);
+            var mm = (double)metres * 1000d;
+            for (var digits = 1; digits <= 17; digits++)
+            {
+                var text = mm.ToString("G" + digits.ToString(CultureInfo.InvariantCulture),
+                    CultureInfo.InvariantCulture);
+                if (text.IndexOf('E') >= 0 || text.IndexOf('e') >= 0)
+                {
+                    // Prefer plain notation; a longer digit count renders it plain.
+                    continue;
+                }
+
+                if (TryParseMillimetresToMetres(text, out var back) && back == metres)
+                {
+                    return text;
+                }
+            }
+
+            return mm.ToString("R", CultureInfo.InvariantCulture);
         }
 
         /// <summary>

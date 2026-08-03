@@ -45,6 +45,12 @@ Found 2026-08-03 during a static audit of every ratified `DivergenceSettings` fi
 
 ## Evidence log
 
+### 2026-08-03 — Block 2.2.1: A1 review fix — shortest round-trip mm display (`feat/block-2.2.1`)
+
+**Review decision (human):** A1 accepted, deviations 1–3 approved; deviation 4 (full-"R" mm display of window overrides) REJECTED — the input field must show the shortest plain round-trip representation of the stored value ("0.0001", never "0.000100000005"); storage/manifest/evidence keep full precision. Display-only fix in `GhostSearchEntryResolver.MillimetresTextFromMetres` (G1…G17 ascending, plain notation only, first text that parses back bit-equal; "R" fallback); storage and resolver untouched. New test `DisplayShowsShortestRoundTripTextForNonExactFloats` (typed→display equality for 0.0001 / 0.002 / 0.1234 / 7.3 / 10 / 0.01 + display→stored bit-equality).
+
+**VERIFIED FACT — batchmode** (`Block2.2.1-a1-fix`, exit 0): EditMode **115/115**, PlayMode **21/21**. **VERIFIED FACT — control search with defaults re-run** (`ghost-20260803T153414301-body49-X-AscendFromStart`): window rows and `metrics.json` `thresholdEstimateMetres:1.98919879E-05` bit-identical to the gate. **VERIFIED FACT — override screenshot** (`Block2.2.1-a1-ui/state-override-shortest-display.png`, visually inspected): floor/ceiling committed as 0.002 / 7.3 мм display exactly `0.002` / `7.3` (stored 2E-06 / 0.0073 м), «Источник: дефолты + правка окна (обе границы)», сброс и запуск enabled.
+
 ### 2026-08-03 — Block 2.2.1: A1 search-entry parameterization (`feat/block-2.2.1`, awaiting review)
 
 **Contract:** `docs/CONTRACT-2.2.1.md` (ratified full text + mockup amendment, commits `12ccfaf` + `5c7ab7d`). **Scope:** `GhostSearchEntry.cs` (new: entry struct, target catalog via display-name provider, resolver = the single settings path, verbatim table reasons, mm↔m invariant-culture conversion), host (`TryStartTowerSearch(GhostSearchEntry, source, out reject)`, full SessionState entry persistence, runner resolves fail-closed — `SETTINGS_RESOLVE_FAILED`, no CreateDefault call sites), window (asset ObjectField by GUID, target dropdown, editable ε range in mm with per-field verbatim reasons, no silent step reset, «Сбросить к источнику», «Источник» row, settings-source rows in the result), Evidence (`GhostSettingsProvenance` + manifest `settingsSource`), Core additive-only (3 validation-bound consts in `DivergenceSettings`).

@@ -298,6 +298,46 @@ namespace BugCam.Tests
         }
 
         [Test]
+        public void DisplayShowsShortestRoundTripTextForNonExactFloats()
+        {
+            // Review decision 2026-08-03: the input field displays the shortest plain
+            // round-trip representation of the stored metres — what the user typed is what
+            // they see — while storage stays bit-exact. Values chosen for non-exact float
+            // representation (the old full-"R" display showed "0.000100000005" etc.).
+            var toText = ResolverType().GetMethod(
+                "MillimetresTextFromMetres", BindingFlags.Public | BindingFlags.Static);
+            var tryParse = ResolverType().GetMethod(
+                "TryParseMillimetresToMetres", BindingFlags.Public | BindingFlags.Static);
+
+            foreach (var pair in new[]
+                     {
+                         new[] { "0.0001", "0.0001" },
+                         new[] { "0.002", "0.002" },
+                         new[] { "0.1234", "0.1234" },
+                         new[] { "7.3", "7.3" },
+                         new[] { "10", "10" },
+                         new[] { "0.01", "0.01" }
+                     })
+            {
+                var parseArgs = new object[] { pair[0], null };
+                Assert.That((bool)tryParse.Invoke(null, parseArgs), Is.True, pair[0]);
+                var metres = (float)parseArgs[1];
+
+                var display = (string)toText.Invoke(null, new object[] { metres });
+                Assert.That(
+                    display,
+                    Is.EqualTo(pair[1]),
+                    "typed '" + pair[0] + "' must display as '" + pair[1] + "'");
+
+                // Display → parse must still recover the stored metres bit-exactly.
+                var backArgs = new object[] { display, null };
+                Assert.That((bool)tryParse.Invoke(null, backArgs), Is.True);
+                Assert.That((float)backArgs[1], Is.EqualTo(metres),
+                    "display text must round-trip to the stored value");
+            }
+        }
+
+        [Test]
         public void SingleSettingsConstructionPathAndNoSilentStepReset()
         {
             var hostCs = File.ReadAllText(Path.Combine(
