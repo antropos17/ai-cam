@@ -70,10 +70,15 @@ namespace BugCam.Core
                 return DivergenceResult.Failure("BodyCount must be greater than zero.");
             }
 
+            // Intentional dead-code guard: StateStride is a const equal to 14 today,
+            // so this branch is unreachable by design — it fires only if the constant
+            // is ever changed without updating the recording layout. Do not remove.
+#pragma warning disable 0162
             if (BugCamConstants.StateStride != 14)
             {
                 return DivergenceResult.Failure("State stride must be exactly 14 floats.");
             }
+#pragma warning restore 0162
 
             var expectedLength = stepCount * bodyCount * BugCamConstants.StateStride;
             if (baselineFrames.Length != expectedLength ||
