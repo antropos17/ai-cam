@@ -1,6 +1,5 @@
 #if UNITY_EDITOR
 using System;
-using System.Collections;
 using System.Globalization;
 using System.IO;
 using BugCam.Core;
@@ -13,18 +12,18 @@ namespace BugCam.Editor
     /// <summary>
     /// Block 1.5 Ghost Visualization Editor window.
     /// Menu: BugCam/Ghost Visualization. Not the PR4 inspection window; not Day-2 BugCamWindow.
+    /// Search always routes through <see cref="GhostEvidencePlayModeHost"/> (MonoBehaviour nested
+    /// coroutines). Does not use EditorApplication.update wrappers that skip nested IEnumerators.
     /// </summary>
     public sealed class GhostVisualizationWindow : EditorWindow
     {
         private const int DefaultRunStepCount = 32;
-        private const string PendingSearchKey = "BugCam.GhostViz.PendingSearch";
 
         private Vector2 _scroll;
         private string _status = "Idle.";
         private string _summaryText = string.Empty;
         private string _metricsPath = string.Empty;
         private string _evidenceDir = string.Empty;
-        private bool _isRunning;
         private bool _showBaseline = true;
         private bool _showFans = true;
         private EpsilonSearchStrategy _strategy = EpsilonSearchStrategy.AscendFromStart;
@@ -55,17 +54,12 @@ namespace BugCam.Editor
                 _summaryText = GhostEvidenceWriter.BuildSummaryMarkdown(_document);
             }
 
-            EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
-            if (EditorApplication.isPlaying && SessionState.GetBool(PendingSearchKey, false))
-            {
-                SessionState.SetBool(PendingSearchKey, false);
-                EditorCoroutineUtility.StartCoroutine(RunSearchCoroutine(), this);
-            }
+            GhostEvidencePlayModeHost.SearchCompleted += OnHostSearchCompleted;
         }
 
         private void OnDestroy()
         {
-            EditorApplication.playModeStateChanged -= OnPlayModeStateChanged;
+            GhostEvidencePlayModeHost.SearchCompleted -= OnHostSearchCompleted;
         }
 
         private void OnDisable()
@@ -79,14 +73,16 @@ namespace BugCam.Editor
 
             EditorGUILayout.LabelField("BugCam — Ghost Visualization (Block 1.5)", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
-                "Runs adaptive epsilon search on TowerScene, builds ghost evidence, " +
+                "Runs adaptive epsilon search on TowerScene via GhostEvidencePlayModeHost " +
+                "(MonoBehaviour nested coroutines), builds ghost evidence, " +
                 "draws Scene View trajectories (Handles.DrawAAPolyLine), and writes " +
                 "Library/BugCamEvidence/Runs/<run-id>/ + Block1.5 checkpoint pointer.",
                 MessageType.Info);
 
             DrawLabelLegend();
 
-            EditorGUI.BeginDisabledGroup(_isRunning);
+            var busy = GhostEvidencePlayModeHost.IsSearchBusy;
+            EditorGUI.BeginDisabledGroup(busy);
             _searchAxis = EditorGUILayout.Vector3Field("Search Axis", _searchAxis);
             _strategy = (EpsilonSearchStrategy)EditorGUILayout.EnumPopup("Strategy", _strategy);
             _stepCount = EditorGUILayout.IntField("Step Count", _stepCount);
@@ -183,7 +179,9 @@ namespace BugCam.Editor
 
             EditorGUILayout.Space(8f);
             EditorGUILayout.LabelField("Status", EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox(_status, MessageType.None);
+            EditorGUILayout.HelpBox(
+                busy ? "Running epsilon search via Host MonoBehaviour…" : _status,
+                MessageType.None);
 
             if (!string.IsNullOrEmpty(_metricsPath))
             {
@@ -224,6 +222,7 @@ namespace BugCam.Editor
         {
             var search = document.SearchResult;
             var primary = document.PrimaryDivergence;
+            var primaryAvailable = GhostEvidenceWriter.HasPrimaryDivergenceMetrics(document);
             EditorGUILayout.Space(4f);
             EditorGUILayout.LabelField("Metric panel", EditorStyles.boldLabel);
             EditorGUILayout.LabelField("Verdict", search.Verdict);
@@ -232,18 +231,28 @@ namespace BugCam.Editor
                 "body " + document.SearchIdentity.TargetBodyId +
                 " / " + AxisName(document.SearchIdentity.SearchAxis) +
                 " / " + document.SearchIdentity.Strategy);
-            EditorGUILayout.LabelField(
-                "Search Floor",
-                FormatMetres(search.SearchRangeStartMetres));
-            EditorGUILayout.LabelField(
-                "Search Range",
-                FormatMetres(search.SearchRangeStartMetres) + " … " +
-                FormatMetres(search.SearchRangeCeilingMetres));
-            EditorGUILayout.LabelField(
-                "Characterization Ceiling",
-                FormatMetres(search.CharacterizationCeilingMetres));
 
-            if (search.HasThresholdEstimate)
+            if (document.Success && search.Succeeded)
+            {
+                EditorGUILayout.LabelField(
+                    "Search Floor",
+                    FormatMetres(search.SearchRangeStartMetres));
+                EditorGUILayout.LabelField(
+                    "Search Range",
+                    FormatMetres(search.SearchRangeStartMetres) + " … " +
+                    FormatMetres(search.SearchRangeCeilingMetres));
+                EditorGUILayout.LabelField(
+                    "Characterization Ceiling",
+                    FormatMetres(search.CharacterizationCeilingMetres));
+            }
+            else
+            {
+                EditorGUILayout.LabelField("Search Floor", "unavailable");
+                EditorGUILayout.LabelField("Search Range", "unavailable");
+                EditorGUILayout.LabelField("Characterization Ceiling", "unavailable");
+            }
+
+            if (search.HasThresholdEstimate && document.Success)
             {
                 EditorGUILayout.LabelField(
                     "Threshold Estimate",
@@ -254,194 +263,84 @@ namespace BugCam.Editor
                 EditorGUILayout.LabelField("Threshold Estimate", "unavailable");
             }
 
-            EditorGUILayout.LabelField(
-                "Reference Epsilon",
-                FormatMetres(search.ReferenceEpsilonMetres) +
-                " (exact=" + search.ReferenceIsExactThreshold + ")");
+            if (GhostEvidenceWriter.HasReferenceEpsilon(search) && document.Success)
+            {
+                EditorGUILayout.LabelField(
+                    "Reference Epsilon",
+                    FormatMetres(search.ReferenceEpsilonMetres) +
+                    " (exact=" + search.ReferenceIsExactThreshold + ")");
+            }
+            else
+            {
+                EditorGUILayout.LabelField("Reference Epsilon", "unavailable");
+            }
+
             EditorGUILayout.LabelField("Retained fans", document.Fans.Length.ToString());
             EditorGUILayout.LabelField("Ranked ghost bodies", document.RankedBodies.Length.ToString());
-            EditorGUILayout.LabelField("First divergence frame", primary.FirstDivergenceFrame.ToString());
-            EditorGUILayout.LabelField("Max spread", FormatMetres(primary.MaxSpreadMetres));
+
+            if (primaryAvailable)
+            {
+                EditorGUILayout.LabelField(
+                    "First divergence frame",
+                    primary.FirstDivergenceFrame.ToString(CultureInfo.InvariantCulture));
+                EditorGUILayout.LabelField(
+                    "First divergence body",
+                    primary.FirstDivergenceBodyId.ToString(CultureInfo.InvariantCulture));
+                EditorGUILayout.LabelField("Max spread", FormatMetres(primary.MaxSpreadMetres));
+                EditorGUILayout.LabelField(
+                    "Max spread body",
+                    primary.MaxSpreadBodyId.ToString(CultureInfo.InvariantCulture));
+            }
+            else
+            {
+                EditorGUILayout.LabelField("First divergence frame", "unavailable");
+                EditorGUILayout.LabelField("First divergence body", "unavailable");
+                EditorGUILayout.LabelField("Max spread", "unavailable");
+                EditorGUILayout.LabelField("Max spread body", "unavailable");
+            }
+
             EditorGUILayout.LabelField(
                 "Amplification",
-                primary.AmplificationDefined ? primary.Amplification.ToString("R") : "unavailable");
+                primaryAvailable && primary.AmplificationDefined
+                    ? primary.Amplification.ToString("R", CultureInfo.InvariantCulture)
+                    : "unavailable");
         }
 
         private void StartSearch()
         {
-            if (_isRunning)
-            {
-                return;
-            }
-
-            if (!EditorApplication.isPlaying)
-            {
-                _status = "Entering Play Mode to run epsilon search…";
-                SessionState.SetBool(PendingSearchKey, true);
-                SessionState.SetInt("BugCam.GhostViz.StepCount", _stepCount);
-                SessionState.SetInt("BugCam.GhostViz.Strategy", (int)_strategy);
-                SessionState.SetFloat("BugCam.GhostViz.AxisX", _searchAxis.x);
-                SessionState.SetFloat("BugCam.GhostViz.AxisY", _searchAxis.y);
-                SessionState.SetFloat("BugCam.GhostViz.AxisZ", _searchAxis.z);
-                EditorApplication.isPlaying = true;
-                return;
-            }
-
-            EditorCoroutineUtility.StartCoroutine(RunSearchCoroutine(), this);
-        }
-
-        private void OnPlayModeStateChanged(PlayModeStateChange state)
-        {
-            if (state != PlayModeStateChange.EnteredPlayMode)
-            {
-                return;
-            }
-
-            if (!SessionState.GetBool(PendingSearchKey, false))
-            {
-                return;
-            }
-
-            SessionState.SetBool(PendingSearchKey, false);
-            _stepCount = SessionState.GetInt("BugCam.GhostViz.StepCount", DefaultRunStepCount);
-            _strategy = (EpsilonSearchStrategy)SessionState.GetInt(
-                "BugCam.GhostViz.Strategy",
-                (int)EpsilonSearchStrategy.AscendFromStart);
-            _searchAxis = new Vector3(
-                SessionState.GetFloat("BugCam.GhostViz.AxisX", 1f),
-                SessionState.GetFloat("BugCam.GhostViz.AxisY", 0f),
-                SessionState.GetFloat("BugCam.GhostViz.AxisZ", 0f));
-            EditorCoroutineUtility.StartCoroutine(RunSearchCoroutine(), this);
-        }
-
-        private IEnumerator RunSearchCoroutine()
-        {
-            _isRunning = true;
-            _status = "Running epsilon search…";
-            Repaint();
-
-            GhostEvidenceDocument document = null;
-            GhostEvidenceWriteResult write = default;
-            string error = null;
-
-            EpsilonSearchResult searchResult = default;
-            var identity = new GhostSearchIdentity(49, NormalizeAxis(_searchAxis), _strategy);
-            var environment = GhostRunEnvironment.Capture(
-                UnityEngine.SceneManagement.SceneManager.GetActiveScene().path);
-
-            try
-            {
-                var settings = DivergenceSettings.CreateDefault();
-                var searchSettings = settings.ToSearchSettings();
-                var search = new EpsilonSearch(
-                    searchSettings,
-                    identity.TargetBodyId,
-                    identity.SearchAxis,
-                    identity.Strategy);
-                var bodies = TowerProbeRequestFactory.CreateBaseline(_stepCount).Bodies;
-                var scales = BuildBodyScales(bodies);
-                var runner = new EpsilonSearchRunner();
-
-                yield return runner.Run(
-                    search,
-                    bodies,
+            if (!GhostEvidencePlayModeHost.TryStartTowerSearch(
                     _stepCount,
-                    settings.ToThresholds(),
-                    scales);
-
-                searchResult = runner.LastResult;
-                Debug.Log(GhostEvidenceWriter.FormatHonestSearchReport(
-                    searchResult,
-                    searchResult.Succeeded));
-
-                var build = GhostEvidenceBuilder.Build(
-                    searchResult,
-                    identity,
-                    settings,
-                    scales,
-                    null,
-                    environment);
-                if (!build.Succeeded || build.Document == null)
-                {
-                    // Last-resort failure bundle when Build cannot produce a document.
-                    document = GhostEvidenceBuilder.CreateFailureDocument(
-                        searchResult,
-                        identity,
-                        searchResult.Succeeded
-                            ? GhostEvidenceErrorCodes.BuildFailed
-                            : GhostEvidenceBuilder.ResolveSearchErrorCode(searchResult.ErrorReason),
-                        build.ErrorReason ?? searchResult.ErrorReason,
-                        settings.GhostBodyLimit,
-                        null,
-                        environment);
-                }
-                else
-                {
-                    document = build.Document;
-                }
-
-                Debug.Log(GhostEvidenceReport.Format(document));
-
-                var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
-                write = GhostEvidenceWriter.Write(document, projectRoot);
-                if (!write.Succeeded)
-                {
-                    error = write.ErrorReason;
-                    yield break;
-                }
-
-                if (document.Success)
-                {
-                    try
-                    {
-                        GhostScreenshotCapture.Capture(document, write.RunDirectory);
-                    }
-                    catch (Exception captureEx)
-                    {
-                        Debug.LogWarning("Ghost screenshot capture: " + captureEx.Message);
-                    }
-                }
-                else
-                {
-                    error = document.ErrorCode + ": " + document.ErrorReason;
-                }
-            }
-            finally
+                    _strategy,
+                    NormalizeAxis(_searchAxis),
+                    GhostEvidencePlayModeHost.SourceWindow,
+                    out var rejectReason))
             {
-                _isRunning = false;
+                _status = rejectReason;
+                Repaint();
+                return;
             }
 
-            if (document != null && write.Succeeded)
+            _status = EditorApplication.isPlaying
+                ? "Running epsilon search via Host MonoBehaviour…"
+                : "Entering Play Mode to run epsilon search via Host…";
+            Repaint();
+        }
+
+        private void OnHostSearchCompleted(GhostSearchCompletion completion)
+        {
+            if (completion.Document != null && completion.WriteSucceeded)
             {
-                _document = document;
-                _evidenceDir = write.RunDirectory;
-                _metricsPath = write.MetricsPath;
-                _summaryText = GhostEvidenceWriter.BuildSummaryMarkdown(document);
+                _document = completion.Document;
+                _evidenceDir = completion.Write.RunDirectory;
+                _metricsPath = completion.Write.MetricsPath;
+                _summaryText = GhostEvidenceWriter.BuildSummaryMarkdown(completion.Document);
 
                 var session = GhostVisualizationSession.Ensure();
-                session.SetDocument(document, write.RunDirectory, write.MetricsPath);
                 session.ShowBaseline = _showBaseline;
                 session.ShowFans = _showFans;
-                session.IsVisible = document.Success;
-                if (document.Success)
-                {
-                    session.FrameOverview();
-                }
             }
 
-            if (!string.IsNullOrEmpty(error))
-            {
-                _status = "Failed (evidence written): " + error +
-                          (write.Succeeded ? "; evidence=" + write.RunDirectory : string.Empty);
-                Repaint();
-                yield break;
-            }
-
-            _status =
-                "Success. Verdict=" + document.SearchResult.Verdict +
-                "; fans=" + document.Fans.Length +
-                "; rankedBodies=" + document.RankedBodies.Length +
-                "; evidence=" + write.RunDirectory;
+            _status = completion.Status;
             Repaint();
             SceneView.RepaintAll();
         }
@@ -488,18 +387,6 @@ namespace BugCam.Editor
             EditorUtility.RevealInFinder(path);
         }
 
-        private static float[] BuildBodyScales(SimulationBodyDefinition[] bodies)
-        {
-            var scales = new float[bodies.Length];
-            for (var i = 0; i < bodies.Length; i++)
-            {
-                var s = bodies[i].Size;
-                scales[i] = Mathf.Max(s.x, Mathf.Max(s.y, s.z));
-            }
-
-            return scales;
-        }
-
         private static Vector3 NormalizeAxis(Vector3 axis)
         {
             if (axis == Vector3.zero)
@@ -534,37 +421,6 @@ namespace BugCam.Editor
         {
             return metres.ToString("R", CultureInfo.InvariantCulture) + " m (" +
                    (metres * 1000f).ToString("R", CultureInfo.InvariantCulture) + " mm)";
-        }
-    }
-
-    /// <summary>
-    /// Minimal Editor coroutine host — avoids depending on external EditorCoroutine packages.
-    /// </summary>
-    internal static class EditorCoroutineUtility
-    {
-        public static void StartCoroutine(IEnumerator enumerator, EditorWindow host)
-        {
-            void Tick()
-            {
-                try
-                {
-                    if (enumerator == null || !enumerator.MoveNext())
-                    {
-                        EditorApplication.update -= Tick;
-                        if (host != null)
-                        {
-                            host.Repaint();
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    EditorApplication.update -= Tick;
-                    Debug.LogException(ex);
-                }
-            }
-
-            EditorApplication.update += Tick;
         }
     }
 }

@@ -115,6 +115,7 @@ namespace BugCam.Tests
             Assert.That(
                 File.Exists(Path.Combine(runDir, "report", "console-report.txt")),
                 Is.True);
+            Assert.That(File.Exists(Path.Combine(runDir, "runs", "baseline.json")), Is.True);
 
             // STABLE ⇒ 0 fans; otherwise Core retains exactly 15.
             var fanCount = Arr(document, "Fans").Length;
@@ -122,14 +123,59 @@ namespace BugCam.Tests
             if (verdict == "STABLE WITHIN TESTED RANGE")
             {
                 Assert.That(fanCount, Is.EqualTo(0));
+                Assert.That(
+                    Directory.GetFiles(Path.Combine(runDir, "runs"), "fan-*.json").Length,
+                    Is.EqualTo(0));
             }
             else
             {
                 Assert.That(fanCount, Is.EqualTo(15));
+                for (var i = 0; i < 15; i++)
+                {
+                    Assert.That(
+                        File.Exists(Path.Combine(runDir, "runs", "fan-" + i.ToString("00") + ".json")),
+                        Is.True);
+                }
             }
+
+            Assert.That(Prop<bool>(searchResult, "Succeeded"), Is.True);
 
             yield return WaitCleanup(initialSceneCount);
             Assert.That(SceneManager.sceneCount, Is.EqualTo(initialSceneCount));
+        }
+
+        [UnityTest]
+        public IEnumerator NestedRunnerYieldReturnFullyExecutesAcrossEditorUpdates()
+        {
+            // Proves the Host MonoBehaviour path semantics: yield return runner.Run(...)
+            // fully executes nested waits (same pump Unity uses for GhostEvidencePlayModeHost).
+            Assert.That(Physics.simulationMode, Is.EqualTo(SimulationMode.Script));
+            var initialSceneCount = SceneManager.sceneCount;
+            object searchResult = null;
+
+            yield return RunSearch(r => searchResult = r);
+
+            Assert.That(searchResult, Is.Not.Null);
+            Assert.That(
+                Prop<bool>(searchResult, "Succeeded"),
+                Is.True,
+                Prop<string>(searchResult, "ErrorReason"));
+
+            var fanCount = Arr(searchResult, "FanRuns").Length;
+            var verdict = Prop<string>(searchResult, "Verdict");
+            if (verdict == "STABLE WITHIN TESTED RANGE")
+            {
+                Assert.That(fanCount, Is.EqualTo(0));
+            }
+            else
+            {
+                Assert.That(
+                    fanCount,
+                    Is.EqualTo(15),
+                    "Characterization must retain exactly 15 fans when not STABLE.");
+            }
+
+            yield return WaitCleanup(initialSceneCount);
         }
 
         private static IEnumerator RunSearch(Action<object> onCompleted)

@@ -251,6 +251,14 @@ namespace BugCam.Core
                 ? -1
                 : ResolveBodyId(stableBodyIds, maxSpreadBodyIndex);
 
+            var firstDivergenceBodyId = ResolveFirstDivergenceBodyId(
+                baselineFrames,
+                perturbedFrames,
+                stepCount,
+                bodyCount,
+                firstDivergenceFrame,
+                stableBodyIds);
+
             var amplificationDefined = epsilonMetres > 0f;
             var amplification = 0f;
             if (amplificationDefined)
@@ -269,6 +277,7 @@ namespace BugCam.Core
                 epsilonMetres,
                 firstDivergenceFrame >= 0,
                 firstDivergenceFrame,
+                firstDivergenceBodyId,
                 maxSpreadMetres,
                 maxSpreadStep,
                 maxSpreadBodyId,
@@ -277,6 +286,55 @@ namespace BugCam.Core
                 amplification,
                 perBodyMaxPositionError,
                 sceneScorePerStep);
+        }
+
+        /// <summary>
+        /// Body with largest |Δpos| at the first sustained-divergence frame.
+        /// Tie-break: lower bodyIndex wins. Independent of global MaxSpreadBodyId.
+        /// </summary>
+        private static int ResolveFirstDivergenceBodyId(
+            float[] baselineFrames,
+            float[] perturbedFrames,
+            int stepCount,
+            int bodyCount,
+            int firstDivergenceFrame,
+            int[] stableBodyIds)
+        {
+            if (firstDivergenceFrame < 0 || firstDivergenceFrame >= stepCount)
+            {
+                return -1;
+            }
+
+            var bestError = -1f;
+            var bestBodyIndex = -1;
+            for (var bodyIndex = 0; bodyIndex < bodyCount; bodyIndex++)
+            {
+                var offset = StateRecorder.IndexOf(
+                    0,
+                    firstDivergenceFrame,
+                    bodyIndex,
+                    stepCount,
+                    bodyCount);
+                var positionError = Magnitude(
+                    baselineFrames[offset] - perturbedFrames[offset],
+                    baselineFrames[offset + 1] - perturbedFrames[offset + 1],
+                    baselineFrames[offset + 2] - perturbedFrames[offset + 2]);
+                if (!IsFinite(positionError))
+                {
+                    continue;
+                }
+
+                // Strict greater: equal errors keep the lower bodyIndex (ascending tie-break).
+                if (bestBodyIndex < 0 || positionError > bestError)
+                {
+                    bestError = positionError;
+                    bestBodyIndex = bodyIndex;
+                }
+            }
+
+            return bestBodyIndex < 0
+                ? -1
+                : ResolveBodyId(stableBodyIds, bestBodyIndex);
         }
 
         /// <summary>

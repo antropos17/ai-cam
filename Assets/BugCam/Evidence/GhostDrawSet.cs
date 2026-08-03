@@ -39,12 +39,13 @@ namespace BugCam.Evidence
     /// <summary>World-space marker (first divergence / max spread).</summary>
     public sealed class GhostMarker
     {
-        public GhostMarker(string kind, Vector3 position, Color color, bool available)
+        public GhostMarker(string kind, Vector3 position, Color color, bool available, int bodyId = -1)
         {
             Kind = kind ?? string.Empty;
             Position = position;
             Color = color;
             Available = available;
+            BodyId = bodyId;
         }
 
         public string Kind { get; }
@@ -54,10 +55,15 @@ namespace BugCam.Evidence
         public Color Color { get; }
 
         public bool Available { get; }
+
+        /// <summary>Stable body id sampled for this marker, or -1 when unavailable.</summary>
+        public int BodyId { get; }
     }
 
     /// <summary>
     /// Pure-data draw set for Scene View Handles — no Editor APIs, no GameObjects.
+    /// First-divergence marker uses FirstDivergenceBodyId @ FirstDivergenceFrame;
+    /// max-spread marker uses MaxSpreadBodyId @ MaxSpreadStep — independent selections.
     /// </summary>
     public sealed class GhostDrawSet
     {
@@ -71,8 +77,10 @@ namespace BugCam.Evidence
             default,
             default,
             false,
+            -1,
             default,
-            false);
+            false,
+            -1);
 
         public GhostDrawSet(
             GhostPolyline[] polylines,
@@ -81,8 +89,10 @@ namespace BugCam.Evidence
             Bounds worldBounds,
             Vector3 firstDivergenceWorld,
             bool hasFirstDivergence,
+            int firstDivergenceBodyId,
             Vector3 maxSpreadWorld,
-            bool hasMaxSpread)
+            bool hasMaxSpread,
+            int maxSpreadBodyId)
         {
             Polylines = polylines ?? EmptyPolylines;
             Markers = markers ?? EmptyMarkers;
@@ -90,8 +100,10 @@ namespace BugCam.Evidence
             WorldBounds = worldBounds;
             FirstDivergenceWorld = firstDivergenceWorld;
             HasFirstDivergence = hasFirstDivergence;
+            FirstDivergenceBodyId = firstDivergenceBodyId;
             MaxSpreadWorld = maxSpreadWorld;
             HasMaxSpread = hasMaxSpread;
+            MaxSpreadBodyId = maxSpreadBodyId;
         }
 
         public GhostPolyline[] Polylines { get; }
@@ -106,8 +118,12 @@ namespace BugCam.Evidence
 
         public bool HasFirstDivergence { get; }
 
+        public int FirstDivergenceBodyId { get; }
+
         public Vector3 MaxSpreadWorld { get; }
 
         public bool HasMaxSpread { get; }
+
+        public int MaxSpreadBodyId { get; }
     }
 }

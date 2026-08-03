@@ -10,14 +10,23 @@ using UnityEngine;
 namespace BugCam.Editor
 {
     /// <summary>
-    /// Play Mode host for Block 1.5 ghost search + evidence write.
-    /// Survives domain reload via SessionState + InitializeOnLoad + DontDestroyOnLoad runner.
+    /// Single Play Mode search pipeline for Block 1.5 ghost evidence.
+    /// Window and menu both route here — Unity nested coroutines via MonoBehaviour.
+    /// Never use EditorApplication.update wrappers that fail to pump nested IEnumerators.
     /// </summary>
     [InitializeOnLoad]
     public static class GhostEvidencePlayModeHost
     {
         private const string GoName = "BugCamGhostEvidenceRunner_TEMP";
         private const string PendingKey = "BugCam.GhostHost.Pending";
+        private const string BusyKey = "BugCam.GhostSearch.Busy";
+        private const string SourceKey = "BugCam.GhostHost.Source";
+
+        public const string SourceWindow = "window";
+        public const string SourceMenu = "menu";
+
+        /// <summary>Raised on the main thread when a hosted search finishes (success or failure).</summary>
+        public static event Action<GhostSearchCompletion> SearchCompleted;
 
         static GhostEvidencePlayModeHost()
         {
@@ -29,15 +38,40 @@ namespace BugCam.Editor
         [MenuItem("BugCam/Run Ghost Evidence (Tower / step 32)")]
         public static void MenuRunTowerStep32()
         {
-            StartTowerSearch(32, EpsilonSearchStrategy.AscendFromStart, Vector3.right);
+            StartTowerSearch(32, EpsilonSearchStrategy.AscendFromStart, Vector3.right, SourceMenu);
+        }
+
+        /// <summary>True when a Window or Host search is pending or running.</summary>
+        public static bool IsSearchBusy => SessionState.GetBool(BusyKey, false);
+
+        public static bool TryStartTowerSearch(
+            int stepCount,
+            EpsilonSearchStrategy strategy,
+            Vector3 searchAxis,
+            string source,
+            out string rejectReason)
+        {
+            if (IsSearchBusy)
+            {
+                rejectReason = "A ghost search is already pending or running (Window and Host share one pipeline).";
+                return false;
+            }
+
+            StartTowerSearch(stepCount, strategy, searchAxis, source ?? SourceMenu);
+            rejectReason = null;
+            return true;
         }
 
         public static void StartTowerSearch(
             int stepCount = 32,
             EpsilonSearchStrategy strategy = EpsilonSearchStrategy.AscendFromStart,
-            Vector3? searchAxis = null)
+            Vector3? searchAxis = null,
+            string source = SourceMenu)
         {
             var axis = searchAxis ?? Vector3.right;
+            SessionState.SetBool(BusyKey, true);
+            SessionState.SetString(SourceKey, source ?? SourceMenu);
+
             if (!EditorApplication.isPlaying)
             {
                 SessionState.SetBool(PendingKey, true);
@@ -58,6 +92,14 @@ namespace BugCam.Editor
             if (state == PlayModeStateChange.EnteredPlayMode)
             {
                 TryResumePending();
+            }
+            else if (state == PlayModeStateChange.ExitingPlayMode)
+            {
+                // Leaving play without a completed run: clear busy so Edit Mode can retry.
+                if (SessionState.GetBool(PendingKey, false))
+                {
+                    // Still pending into play — keep busy.
+                }
             }
         }
 
@@ -95,17 +137,31 @@ namespace BugCam.Editor
             UnityEngine.Object.DontDestroyOnLoad(go);
             go.hideFlags = HideFlags.DontSave;
             var runner = go.AddComponent<GhostEvidenceRunnerBehaviour>();
-            runner.Begin(stepCount, strategy, axis);
+            runner.Begin(stepCount, strategy, axis, SessionState.GetString(SourceKey, SourceMenu));
+        }
+
+        private static void FinishBusy()
+        {
+            SessionState.SetBool(BusyKey, false);
+            SessionState.SetBool(PendingKey, false);
         }
 
         private sealed class GhostEvidenceRunnerBehaviour : MonoBehaviour
         {
-            public void Begin(int stepCount, EpsilonSearchStrategy strategy, Vector3 axis)
+            public void Begin(
+                int stepCount,
+                EpsilonSearchStrategy strategy,
+                Vector3 axis,
+                string source)
             {
-                StartCoroutine(Run(stepCount, strategy, axis));
+                StartCoroutine(Run(stepCount, strategy, axis, source));
             }
 
-            private IEnumerator Run(int stepCount, EpsilonSearchStrategy strategy, Vector3 axis)
+            private IEnumerator Run(
+                int stepCount,
+                EpsilonSearchStrategy strategy,
+                Vector3 axis,
+                string source)
             {
                 var settings = DivergenceSettings.CreateDefault();
                 var identity = new GhostSearchIdentity(49, axis.normalized, strategy);
@@ -125,6 +181,8 @@ namespace BugCam.Editor
                 }
 
                 var runner = new EpsilonSearchRunner();
+                // Unity MonoBehaviour nested-coroutine semantics pump runner.Run fully,
+                // including per-frame WaitForSceneCleanup yields.
                 yield return runner.Run(
                     search,
                     bodies,
@@ -167,9 +225,19 @@ namespace BugCam.Editor
 
                 var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
                 var write = GhostEvidenceWriter.Write(document, projectRoot);
+                string status;
                 if (!write.Succeeded)
                 {
-                    Debug.LogError("Ghost evidence write failed: " + write.ErrorReason);
+                    status = "Ghost evidence write failed: " + write.ErrorReason;
+                    Debug.LogError(status);
+                    NotifyComplete(
+                        new GhostSearchCompletion(
+                            source,
+                            document,
+                            write,
+                            searchResult,
+                            false,
+                            status));
                     Cleanup();
                     yield break;
                 }
@@ -189,26 +257,94 @@ namespace BugCam.Editor
                     session.SetDocument(document, write.RunDirectory, write.MetricsPath);
                     session.IsVisible = true;
                     session.FrameOverview();
+                    status =
+                        "Success. Verdict=" + document.SearchResult.Verdict +
+                        "; fans=" + document.Fans.Length +
+                        "; rankedBodies=" + document.RankedBodies.Length +
+                        "; evidence=" + write.RunDirectory;
                 }
                 else
                 {
+                    status =
+                        "Failed (evidence written): " + document.ErrorCode + ": " +
+                        document.ErrorReason + "; evidence=" + write.RunDirectory;
                     Debug.LogError(
                         "Ghost evidence host failed (" + document.ErrorCode + "): " +
                         document.ErrorReason + " evidenceDir=" + write.RunDirectory);
+
+                    var session = GhostVisualizationSession.Ensure();
+                    session.SetDocument(document, write.RunDirectory, write.MetricsPath);
+                    session.IsVisible = false;
                 }
 
                 Debug.Log(
                     "BUGCAM_BLOCK_1_5_HOST_COMPLETE success=" + document.Success +
+                    " source=" + source +
                     " evidenceDir=" + write.RunDirectory +
-                    " metrics=" + write.MetricsPath);
+                    " metrics=" + write.MetricsPath +
+                    " lastResultSucceeded=" + searchResult.Succeeded +
+                    " fans=" + document.Fans.Length);
+                NotifyComplete(
+                    new GhostSearchCompletion(
+                        source,
+                        document,
+                        write,
+                        searchResult,
+                        write.Succeeded,
+                        status));
                 Cleanup();
             }
 
             private void Cleanup()
             {
+                FinishBusy();
                 Destroy(gameObject);
             }
         }
+
+        private static void NotifyComplete(GhostSearchCompletion completion)
+        {
+            try
+            {
+                SearchCompleted?.Invoke(completion);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogException(ex);
+            }
+        }
+    }
+
+    /// <summary>Completion payload for the single Ghost search pipeline.</summary>
+    public readonly struct GhostSearchCompletion
+    {
+        public GhostSearchCompletion(
+            string source,
+            GhostEvidenceDocument document,
+            GhostEvidenceWriteResult write,
+            EpsilonSearchResult searchResult,
+            bool writeSucceeded,
+            string status)
+        {
+            Source = source ?? string.Empty;
+            Document = document;
+            Write = write;
+            SearchResult = searchResult;
+            WriteSucceeded = writeSucceeded;
+            Status = status ?? string.Empty;
+        }
+
+        public string Source { get; }
+
+        public GhostEvidenceDocument Document { get; }
+
+        public GhostEvidenceWriteResult Write { get; }
+
+        public EpsilonSearchResult SearchResult { get; }
+
+        public bool WriteSucceeded { get; }
+
+        public string Status { get; }
     }
 }
 #endif

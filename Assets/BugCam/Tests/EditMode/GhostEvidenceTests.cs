@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -54,6 +55,23 @@ namespace BugCam.Tests
             Assert.That(
                 Field<string>(type, "RunsRelativeRoot"),
                 Is.EqualTo("Library/BugCamEvidence/Runs"));
+            Assert.That(
+                Field<string>(type, "FirstDivergencePngFileName"),
+                Is.EqualTo("first-sustained-divergence.png"));
+            Assert.That(
+                Field<string>(type, "MaxSpreadPngFileName"),
+                Is.EqualTo("maximum-spread.png"));
+            Assert.That(
+                Field<string>(type, "FinalPngFileName"),
+                Is.EqualTo("final-state.png"));
+            Assert.That(Field<string>(type, "OverviewPngFileName"), Is.EqualTo("overview.png"));
+            Assert.That(Field<string>(type, "RunsDirectoryName"), Is.EqualTo("runs"));
+            Assert.That(Field<string>(type, "BaselineRunFileName"), Is.EqualTo("baseline.json"));
+            Assert.That(
+                Field<string>(type, "ConsoleReportFileName"),
+                Is.EqualTo("console-report.txt"));
+            var fanName = type.GetMethod("FanRunFileName").Invoke(null, new object[] { 0 });
+            Assert.That(fanName, Is.EqualTo("fan-00.json"));
         }
 
         [Test]
@@ -169,6 +187,10 @@ namespace BugCam.Tests
             Assert.That(json, Does.Contain("\"referenceIsExactThreshold\":false"));
             Assert.That(json, Does.Contain("\"amplificationDefined\":false"));
             Assert.That(json, Does.Contain("\"amplification\":null"));
+            Assert.That(json, Does.Contain("\"maxSpreadMetres\":null"));
+            Assert.That(json, Does.Contain("\"firstDivergenceFrame\":null"));
+            Assert.That(json, Does.Contain("\"firstDivergenceBodyId\":null"));
+            Assert.That(json, Does.Contain("\"hasSignificantDivergence\":false"));
             Assert.That(json, Does.Contain("\"unityVersion\":"));
             Assert.That(json, Does.Contain("\"gitCommitSha\":"));
             Assert.That(json, Does.Contain("\"gitBranch\":"));
@@ -196,11 +218,15 @@ namespace BugCam.Tests
             Assert.That(json, Does.Contain("\"thresholdEstimateMetres\":null"));
             Assert.That(json, Does.Contain("\"referenceEpsilonMetres\":null"));
             Assert.That(json, Does.Contain("\"finalBracketWidthMetres\":null"));
+            Assert.That(json, Does.Contain("\"maxSpreadMetres\":null"));
+            Assert.That(json, Does.Contain("\"firstDivergenceFrame\":null"));
+            Assert.That(json, Does.Contain("\"physicalProbeCount\":null"));
 
             var console = FormatHonestConsole(document);
             Assert.That(console, Does.Contain("thresholdEstimateMetres=null"));
             Assert.That(console, Does.Contain("succeeded=False"));
             Assert.That(console, Does.Not.Match("thresholdEstimateMetres=0(\r|\n|$)"));
+            Assert.That(console, Does.Contain("maxSpreadMetres=null"));
         }
 
         [Test]
@@ -243,6 +269,31 @@ namespace BugCam.Tests
                     File.Exists(Path.Combine(runDir, "report", "console-report.txt")),
                     Is.True);
                 Assert.That(Directory.Exists(Path.Combine(runDir, "visuals")), Is.True);
+                Assert.That(
+                    File.Exists(Path.Combine(runDir, "runs", "baseline.json")),
+                    Is.True);
+                for (var i = 0; i < 15; i++)
+                {
+                    var fanFile = Path.Combine(runDir, "runs", "fan-" + i.ToString("00") + ".json");
+                    Assert.That(File.Exists(fanFile), Is.True, fanFile);
+                    var fanJson = File.ReadAllText(fanFile);
+                    Assert.That(fanJson, Does.Contain("\"fanIndex\":" + i));
+                    Assert.That(fanJson, Does.Contain("\"stateFrames\":["));
+                    Assert.That(fanJson, Does.Contain("\"stableBodyIds\":["));
+                }
+
+                var baselineJson = File.ReadAllText(Path.Combine(runDir, "runs", "baseline.json"));
+                Assert.That(baselineJson, Does.Contain("\"kind\":\"baseline\""));
+                Assert.That(baselineJson, Does.Contain("\"stateFrames\":["));
+
+                var manifest = File.ReadAllText(Path.Combine(runDir, "manifest.json"));
+                Assert.That(manifest, Does.Contain("\"artifacts\":["));
+                Assert.That(manifest, Does.Contain("runs/baseline.json"));
+                Assert.That(manifest, Does.Contain("runs/fan-00.json"));
+                Assert.That(manifest, Does.Contain("runs/fan-14.json"));
+                Assert.That(manifest, Does.Contain("first-sustained-divergence.png"));
+                Assert.That(manifest, Does.Contain("maximum-spread.png"));
+                Assert.That(manifest, Does.Contain("final-state.png"));
 
                 var checkpoint = Path.Combine(root, "Library", "BugCamEvidence", "Block1.5");
                 Assert.That(File.Exists(Path.Combine(checkpoint, "last-run.txt")), Is.True);
@@ -260,6 +311,90 @@ namespace BugCam.Tests
                     Directory.Delete(root, true);
                 }
             }
+        }
+
+        [Test]
+        public void StableAndFailureBundlesDoNotFabricateFanRunJson()
+        {
+            var root = Path.Combine(
+                Path.GetTempPath(),
+                "BugCamGhostNoFans-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var writerType = Type.GetType("BugCam.Evidence.GhostEvidenceWriter, BugCam.Evidence");
+                var writeMethod = writerType.GetMethod(
+                    "Write",
+                    new[]
+                    {
+                        Type.GetType("BugCam.Evidence.GhostEvidenceDocument, BugCam.Evidence"),
+                        typeof(string)
+                    });
+
+                var stableDoc = BuildDocument(DriveStableSearch(), Vector3.right, "stable-run");
+                var stableWrite = writeMethod.Invoke(null, new object[] { stableDoc, root });
+                Assert.That(Prop<bool>(stableWrite, "Succeeded"), Is.True);
+                var stableDir = Prop<string>(stableWrite, "RunDirectory");
+                Assert.That(File.Exists(Path.Combine(stableDir, "runs", "baseline.json")), Is.True);
+                Assert.That(
+                    Directory.GetFiles(Path.Combine(stableDir, "runs"), "fan-*.json").Length,
+                    Is.EqualTo(0));
+
+                var failureType = Type.GetType("BugCam.Core.EpsilonSearchResult, BugCam.Core");
+                var failure = failureType.GetMethod("Failure", new[] { typeof(string) })
+                    .Invoke(null, new object[] { "search exploded"});
+                var failDoc = BuildDocument(failure, Vector3.right, "fail-run");
+                Assert.That(Prop<bool>(failDoc, "Success"), Is.False);
+                var failWrite = writeMethod.Invoke(null, new object[] { failDoc, root });
+                Assert.That(Prop<bool>(failWrite, "Succeeded"), Is.True);
+                var failDir = Prop<string>(failWrite, "RunDirectory");
+                Assert.That(failDir, Is.Not.EqualTo(stableDir));
+                Assert.That(File.Exists(Path.Combine(failDir, "runs", "baseline.json")), Is.False);
+                Assert.That(
+                    Directory.GetFiles(Path.Combine(failDir, "runs"), "*.json").Length,
+                    Is.EqualTo(0));
+            }
+            finally
+            {
+                if (Directory.Exists(root))
+                {
+                    Directory.Delete(root, true);
+                }
+            }
+        }
+
+        [Test]
+        public void StrictPrimaryMetricsNullForFailedCleanupBuildStableAndPresentForBracket()
+        {
+            // Failed search
+            var failureType = Type.GetType("BugCam.Core.EpsilonSearchResult, BugCam.Core");
+            var failed = failureType.GetMethod("Failure", new[] { typeof(string) })
+                .Invoke(null, new object[] { "probe failed"});
+            AssertPrimaryUnavailable(BuildMetricsJson(BuildDocument(failed, Vector3.right)));
+
+            // Cleanup timeout
+            var cleanup = failureType.GetMethod("Failure", new[] { typeof(string) })
+                .Invoke(null, new object[] { "Temporary scene cleanup timed out after 120 frames." });
+            var cleanupDoc = BuildDocument(cleanup, Vector3.right);
+            Assert.That(Prop<string>(cleanupDoc, "ErrorCode"), Is.EqualTo("CLEANUP_TIMEOUT"));
+            AssertPrimaryUnavailable(BuildMetricsJson(cleanupDoc));
+
+            // STABLE
+            AssertPrimaryUnavailable(BuildMetricsJson(BuildDocument(DriveStableSearch(), Vector3.right)));
+
+            // Bracket / characterization with divergence — primary object must be populated.
+            var bracketJson = BuildMetricsJson(BuildDocument(DriveBracketSearch(), Vector3.right));
+            Assert.That(bracketJson, Does.Contain("\"hasSignificantDivergence\":true"));
+            Assert.That(bracketJson, Does.Contain("\"hasMaxSpread\":true"));
+            Assert.That(bracketJson, Does.Contain("\"hasFirstDivergenceBodyId\":true"));
+            Assert.That(
+                bracketJson,
+                Does.Match("\"primary\":\\{[^}]*\"maxSpreadMetres\":[0-9]"),
+                "Primary maxSpreadMetres must be a number, not null.");
+            Assert.That(
+                bracketJson,
+                Does.Match("\"primary\":\\{[^}]*\"firstDivergenceBodyId\":[0-9]"),
+                "Primary firstDivergenceBodyId must be a number, not null.");
         }
 
         [Test]
@@ -323,83 +458,155 @@ namespace BugCam.Tests
         }
 
         [Test]
-        public void FirstDivergenceMarkerPrefersMaxSpreadBodyId()
+        public void FirstDivergenceMarkerUsesFirstDivergenceBodyIdNotMaxSpread()
         {
-            // Multi-body Framed fixture: body ids {1,2,49} with increasing y-spread so
-            // MaxSpreadBodyId=49 while AffectedBodyIds (ID-sorted) starts at 1.
+            // Fixture: FirstDivergenceBodyId=2 ≠ MaxSpreadBodyId=49 ≠ AffectedBodyIds[0]=1.
             var searchResult = DriveBracketSearch();
             var document = BuildDocument(searchResult, Vector3.right);
             Assert.That(Prop<bool>(document, "HasPrimaryFan"), Is.True);
 
             var primary = document.GetType().GetProperty("PrimaryDivergence").GetValue(document);
+            var firstDivBodyId = Prop<int>(primary, "FirstDivergenceBodyId");
             var maxSpreadBodyId = Prop<int>(primary, "MaxSpreadBodyId");
             var affected = Prop<int[]>(primary, "AffectedBodyIds");
             var firstDivFrame = Prop<int>(primary, "FirstDivergenceFrame");
-            Assert.That(maxSpreadBodyId, Is.GreaterThanOrEqualTo(0));
+            var maxSpreadStep = Prop<int>(primary, "MaxSpreadStep");
+            Assert.That(firstDivBodyId, Is.EqualTo(2));
+            Assert.That(maxSpreadBodyId, Is.EqualTo(49));
             Assert.That(affected, Is.Not.Null.And.Not.Empty);
+            Assert.That(affected[0], Is.EqualTo(1));
+            Assert.That(firstDivBodyId, Is.Not.EqualTo(maxSpreadBodyId));
+            Assert.That(firstDivBodyId, Is.Not.EqualTo(affected[0]));
+            Assert.That(maxSpreadBodyId, Is.Not.EqualTo(affected[0]));
             Assert.That(firstDivFrame, Is.GreaterThanOrEqualTo(0));
-            Assert.That(
-                affected[0],
-                Is.Not.EqualTo(maxSpreadBodyId),
-                "Fixture must keep AffectedBodyIds[0] != MaxSpreadBodyId so wrong selection fails closed.");
+            Assert.That(maxSpreadStep, Is.GreaterThanOrEqualTo(0));
 
             var fans = Arr(document, "Fans");
             var primaryFan = fans.GetValue(Prop<int>(document, "PrimaryFanIndex"));
             var primaryRun = Prop<object>(primaryFan, "Run");
 
             var samplerType = Type.GetType("BugCam.Evidence.GhostTrajectorySampler, BugCam.Evidence");
-            Assert.That(samplerType, Is.Not.Null);
             var findBodyIndex = samplerType.GetMethod(
                 "FindBodyIndex",
                 BindingFlags.Public | BindingFlags.Static);
             var tryGetBodyPosition = samplerType.GetMethod(
                 "TryGetBodyPosition",
                 BindingFlags.Public | BindingFlags.Static);
-            Assert.That(findBodyIndex, Is.Not.Null);
-            Assert.That(tryGetBodyPosition, Is.Not.Null);
 
-            var maxBodyIndex = (int)findBodyIndex.Invoke(null, new[] { primaryRun, maxSpreadBodyId });
-            Assert.That(maxBodyIndex, Is.GreaterThanOrEqualTo(0));
-            var expectedArgs = new object[] { primaryRun, maxBodyIndex, firstDivFrame, null };
-            Assert.That((bool)tryGetBodyPosition.Invoke(null, expectedArgs), Is.True);
-            var expectedWorld = (Vector3)expectedArgs[3];
+            var firstBodyIndex = (int)findBodyIndex.Invoke(null, new object[] { primaryRun, firstDivBodyId });
+            var firstArgs = new object[] { primaryRun, firstBodyIndex, firstDivFrame, null };
+            Assert.That((bool)tryGetBodyPosition.Invoke(null, firstArgs), Is.True);
+            var expectedFirstWorld = (Vector3)firstArgs[3];
 
-            var wrongBodyIndex = (int)findBodyIndex.Invoke(null, new[] { primaryRun, affected[0] });
-            Assert.That(wrongBodyIndex, Is.GreaterThanOrEqualTo(0));
-            var wrongArgs = new object[] { primaryRun, wrongBodyIndex, firstDivFrame, null };
-            Assert.That((bool)tryGetBodyPosition.Invoke(null, wrongArgs), Is.True);
-            var wrongWorld = (Vector3)wrongArgs[3];
-            Assert.That(
-                wrongWorld,
-                Is.Not.EqualTo(expectedWorld),
-                "AffectedBodyIds[0] and MaxSpreadBodyId samples must differ at FirstDivergenceFrame.");
+            var maxBodyIndex = (int)findBodyIndex.Invoke(null, new object[] { primaryRun, maxSpreadBodyId });
+            var maxArgs = new object[] { primaryRun, maxBodyIndex, maxSpreadStep, null };
+            Assert.That((bool)tryGetBodyPosition.Invoke(null, maxArgs), Is.True);
+            var expectedMaxWorld = (Vector3)maxArgs[3];
+
+            var affectedIndex = (int)findBodyIndex.Invoke(null, new object[] { primaryRun, affected[0] });
+            var affectedArgs = new object[] { primaryRun, affectedIndex, firstDivFrame, null };
+            Assert.That((bool)tryGetBodyPosition.Invoke(null, affectedArgs), Is.True);
+            var affectedWorld = (Vector3)affectedArgs[3];
+
+            Assert.That(expectedFirstWorld, Is.Not.EqualTo(expectedMaxWorld));
+            Assert.That(expectedFirstWorld, Is.Not.EqualTo(affectedWorld));
 
             var drawSet = document.GetType().GetProperty("DrawSet").GetValue(document);
             Assert.That(Prop<bool>(drawSet, "HasFirstDivergence"), Is.True);
             Assert.That(Prop<bool>(drawSet, "HasMaxSpread"), Is.True);
+            Assert.That(Prop<int>(drawSet, "FirstDivergenceBodyId"), Is.EqualTo(2));
+            Assert.That(Prop<int>(drawSet, "MaxSpreadBodyId"), Is.EqualTo(49));
             Assert.That(
                 Prop<Vector3>(drawSet, "FirstDivergenceWorld"),
-                Is.EqualTo(expectedWorld),
-                "First-divergence marker must sample MaxSpreadBodyId at FirstDivergenceFrame.");
+                Is.EqualTo(expectedFirstWorld),
+                "First-divergence marker must sample FirstDivergenceBodyId at FirstDivergenceFrame.");
+            Assert.That(
+                Prop<Vector3>(drawSet, "MaxSpreadWorld"),
+                Is.EqualTo(expectedMaxWorld),
+                "Max-spread marker must sample MaxSpreadBodyId at MaxSpreadStep.");
             Assert.That(
                 Prop<Vector3>(drawSet, "FirstDivergenceWorld"),
-                Is.Not.EqualTo(wrongWorld),
-                "First-divergence marker must not regress to AffectedBodyIds[0].");
+                Is.Not.EqualTo(affectedWorld),
+                "First-divergence marker must not use AffectedBodyIds[0].");
+            Assert.That(
+                Prop<Vector3>(drawSet, "FirstDivergenceWorld"),
+                Is.Not.EqualTo(expectedMaxWorld),
+                "First-divergence marker must not proxy MaxSpreadBodyId.");
+        }
 
-            var markers = Arr(drawSet, "Markers");
-            object firstMarker = null;
-            for (var i = 0; i < markers.Length; i++)
+        [Test]
+        public void WindowRoutesSearchThroughHostAndEditorCoroutineUtilityIsGone()
+        {
+            var windowType = Type.GetType("BugCam.Editor.GhostVisualizationWindow, BugCam.Editor");
+            var hostType = Type.GetType("BugCam.Editor.GhostEvidencePlayModeHost, BugCam.Editor");
+            Assert.That(windowType, Is.Not.Null);
+            Assert.That(hostType, Is.Not.Null);
+            Assert.That(
+                hostType.GetMethod("TryStartTowerSearch"),
+                Is.Not.Null,
+                "Host must expose the single shared search entry.");
+            Assert.That(
+                Type.GetType("BugCam.Editor.EditorCoroutineUtility, BugCam.Editor"),
+                Is.Null,
+                "Broken EditorCoroutineUtility must be removed; Window uses Host MonoBehaviour.");
+            Assert.That(
+                windowType.GetMethod(
+                    "RunSearchCoroutine",
+                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public),
+                Is.Null,
+                "Window must not own a nested-IEnumerator search path.");
+        }
+
+        [Test]
+        public void NestedEnumeratorPumpProvesHostSemanticsRequired()
+        {
+            // Documents the EditorCoroutineUtility bug: outer-only MoveNext never executes
+            // a yielded nested IEnumerator. Host MonoBehaviour / PlayMode yield return Current does.
+            var innerRanBroken = false;
+            IEnumerator InnerBroken()
             {
-                var marker = markers.GetValue(i);
-                if (Prop<string>(marker, "Kind") == "firstDivergence" && Prop<bool>(marker, "Available"))
+                innerRanBroken = true;
+                yield return null;
+            }
+
+            IEnumerator OuterBroken()
+            {
+                yield return InnerBroken();
+            }
+
+            var outer = OuterBroken();
+            Assert.That(outer.MoveNext(), Is.True);
+            Assert.That(outer.Current, Is.InstanceOf<IEnumerator>());
+            // Broken editor path advances outer again without pumping Current.
+            Assert.That(outer.MoveNext(), Is.False);
+            Assert.That(
+                innerRanBroken,
+                Is.False,
+                "Outer-only MoveNext must leave nested body unrun (EditorCoroutineUtility bug).");
+
+            // Correct nested pump (Host / PlayMode / Unity yield return):
+            var innerRanCorrect = false;
+            IEnumerator InnerCorrect()
+            {
+                innerRanCorrect = true;
+                yield return null;
+            }
+
+            IEnumerator OuterCorrect()
+            {
+                var nested = InnerCorrect();
+                while (nested.MoveNext())
                 {
-                    firstMarker = marker;
-                    break;
+                    yield return nested.Current;
                 }
             }
 
-            Assert.That(firstMarker, Is.Not.Null, "Available firstDivergence marker required.");
-            Assert.That(Prop<Vector3>(firstMarker, "Position"), Is.EqualTo(expectedWorld));
+            var correct = OuterCorrect();
+            while (correct.MoveNext())
+            {
+            }
+
+            Assert.That(innerRanCorrect, Is.True, "Nested pump must fully execute inner IEnumerator.");
         }
 
         [Test]
@@ -525,7 +732,7 @@ namespace BugCam.Tests
             UnityEngine.Object.DestroyImmediate((UnityEngine.Object)settings);
         }
 
-        private static object BuildDocument(object searchResult, Vector3 axis)
+        private static object BuildDocument(object searchResult, Vector3 axis, string runId = "test-run")
         {
             var builderType = Type.GetType("BugCam.Evidence.GhostEvidenceBuilder, BugCam.Evidence");
             var identityType = Type.GetType("BugCam.Evidence.GhostSearchIdentity, BugCam.Evidence");
@@ -558,7 +765,7 @@ namespace BugCam.Tests
                         envType
                     }).Invoke(
                     null,
-                    new object[] { searchResult, identity, settings, null, "test-run", environment });
+                    new object[] { searchResult, identity, settings, null, runId, environment });
 
                 Assert.That(Prop<bool>(build, "Succeeded"), Is.True, Prop<string>(build, "ErrorReason"));
                 return Prop<object>(build, "Document");
@@ -567,6 +774,15 @@ namespace BugCam.Tests
             {
                 UnityEngine.Object.DestroyImmediate((UnityEngine.Object)settings);
             }
+        }
+
+        private static void AssertPrimaryUnavailable(string json)
+        {
+            Assert.That(json, Does.Contain("\"maxSpreadMetres\":null"));
+            Assert.That(json, Does.Contain("\"firstDivergenceFrame\":null"));
+            Assert.That(json, Does.Contain("\"firstDivergenceBodyId\":null"));
+            Assert.That(json, Does.Contain("\"amplification\":null"));
+            Assert.That(json, Does.Contain("\"hasSignificantDivergence\":false"));
         }
 
         private static string BuildMetricsJson(object document)
@@ -688,7 +904,9 @@ namespace BugCam.Tests
         private static object Framed(bool diverged, float epsilon, Vector3 axis)
         {
             // Multi-body / multi-step frames so ranking + trajectories are meaningful.
-            const int steps = 8;
+            // Marker split (when diverged): FirstDivergenceBodyId=2 (argmax |Δpos| at frame 2),
+            // MaxSpreadBodyId=49 (global max later), AffectedBodyIds[0]=1 (ID-sorted).
+            const int steps = 12;
             const int bodies = 3;
             var frames = new float[steps * bodies * Stride];
             for (var step = 0; step < steps; step++)
@@ -697,19 +915,20 @@ namespace BugCam.Tests
                 {
                     var offset = ((step * bodies) + body) * Stride;
                     frames[offset] = body * 0.1f;
-                    frames[offset + 1] = diverged && step >= 2 ? step * (0.2f + body * 0.05f) : 0f;
+                    frames[offset + 1] = 0f;
                     frames[offset + 2] = 0f;
                     frames[offset + 6] = 1f;
                 }
             }
 
-            // Baseline-like when not diverged: keep y=0. For baseline epsilon=0, leave zeros.
-            if (!diverged)
+            if (diverged)
             {
-                for (var i = 0; i < frames.Length; i += Stride)
+                for (var step = 2; step < steps; step++)
                 {
-                    frames[i + 1] = 0f;
-                    frames[i + 6] = 1f;
+                    // body0 id=1, body1 id=2, body2 id=49
+                    SetY(frames, step, 0, bodies, 0.5f);
+                    SetY(frames, step, 1, bodies, step < 7 ? 1.2f : 1.2f);
+                    SetY(frames, step, 2, bodies, step < 7 ? 0.4f : 5.0f);
                 }
             }
 
@@ -750,6 +969,11 @@ namespace BugCam.Tests
             return outcomeSuccess.Invoke(
                 null,
                 new object[] { diverged, diverged ? 2 : -1, diverged ? 1.5f : 0f, run });
+        }
+
+        private static void SetY(float[] frames, int step, int body, int bodies, float y)
+        {
+            frames[(((step * bodies) + body) * Stride) + 1] = y;
         }
 
         private static bool NeedsFrames(object phase)

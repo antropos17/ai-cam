@@ -4,8 +4,9 @@
 
 ## Current position
 - Active block: 1.5 (ghost visualization on `feat/block-1.5-ghost-visualization`)
-- Day 1 checkpoint: PASSED (Scene View fan + success-path `EpsilonSearchReport` + `GhostEvidenceReport` + evidence bundle)
+- Day 1 checkpoint: PASSED (Scene View fan + success-path honest reports + evidence bundle)
 - Day 2 checkpoint: NOT PASSED — Day 2 not started (no RetroPlayer, MP4, evidence cameras, camera-plan, cockpit, SceneSight)
+- PR #6 merge-blocker fix tip: see Evidence log 2026-08-03 (pr6-fix) — Window→Host nested coroutine, canonical `runs/*.json` + visual filenames, null-gated primary metrics, `FirstDivergenceBodyId` marker
 
 ## Completed blocks
 | Block | Result | Verification | Commit |
@@ -63,7 +64,7 @@ EditMode +14 (`GhostEvidenceTests`). PlayMode +1 smoke (`GhostEvidencePlayModeTe
 
 ### 2026-08-02 — Block 1.5 gate fix (first-div marker + screenshot compositing)
 
-**MERGE_BLOCKER:** `FirstDivergenceMarkerPrefersMaxSpreadBodyId` now asserts draw-set / marker world position equals `GhostTrajectorySampler` sample of `MaxSpreadBodyId` at `FirstDivergenceFrame`, and fails closed when that would equal `AffectedBodyIds[0]` (multi-body fixture keeps IDs distinct).
+**Historical note:** an earlier tip asserted first-div marker via `MaxSpreadBodyId` proxy. That was incorrect and is superseded by the 2026-08-03 pr6-fix entry (`FirstDivergenceBodyId`).
 
 **Screenshot capture:** `GhostScreenshotCapture` uses `Hidden/Internal-Colored` + `Material.SetPass(0)` before GL lines/markers; refuses solid clear-color frames (no blank PNG kept). EditMode contract `ScreenshotCaptureFailsClosedOnBlankOrWritesDistinctPngs` accepts honest omit under `-nographics`, or distinct hashes when GPU compositing succeeds. Named PNGs from GPU editor sessions are the only valid visual proof — not batchmode blanks.
 
@@ -79,6 +80,27 @@ EditMode +14 (`GhostEvidenceTests`). PlayMode +1 smoke (`GhostEvidencePlayModeTe
 EditMode +1 vs prior tip (`ScreenshotCaptureFailsClosedOnBlankOrWritesDistinctPngs`). Named GPU PNGs not regenerated this pass (no Unity MCP / interactive GPU editor); capture now omits under Null graphics instead of keeping `#1F1F24` blanks.
 
 **Day 2:** not started.
+
+### 2026-08-03 — Block 1.5 PR #6 merge-blocker fix (`feat/block-1.5-ghost-visualization`)
+
+**Base tip before fix:** `459e7ee586281cda62ae9c43eeba489ebdec6946`. **Base main:** `1bd10113eeeb8376ae31379b391e8c408d2884a8`.
+
+**Blockers fixed:**
+1. **Nested Editor coroutine:** removed broken `EditorCoroutineUtility`; Window routes through `GhostEvidencePlayModeHost` MonoBehaviour nested coroutines; shared `BugCam.GhostSearch.Busy` lock.
+2. **Evidence bundle:** writes `runs/baseline.json` + `runs/fan-XX.json` from canonical `BaselineRun`/`Fans[i].Run`; visual filenames `first-sustained-divergence.png` / `maximum-spread.png` / `final-state.png` / `overview.png`; console at `report/console-report.txt`; manifest lists relative paths + availability/status.
+3. **Fabricated primary metrics:** JSON null + `has*` when `!Success` / no significant divergence; panel shows `unavailable`; `FormatHonestSearchReport` gated on `document.Success`.
+4. **First-div marker:** Core `FirstDivergenceBodyId` (argmax |Δpos| @ first-div frame); GhostRenderer uses it; fixture proves first-div body ≠ MaxSpreadBodyId ≠ AffectedBodyIds[0].
+
+**Hardening:** both axes validated; fan ε tolerance fail-closed; OutsideSearchRange consistency fail-closed; session Clear unregisters Scene View callback; screenshot material destroyed on reload/quit.
+
+**VERIFIED FACT — batchmode Unity `6000.3.21f1`** (`run-checkpoint.ps1 -Suite All -EvidenceDir Library\BugCamEvidence\Block1.5-pr6-fix`, exit 0):
+
+| Suite | total | passed | failed | result | XML |
+|---|---|---|---|---|---|
+| EditMode | 90 | 90 | 0 | Passed | `Library/BugCamEvidence/Block1.5-pr6-fix/EditMode.xml` |
+| PlayMode | 21 | 21 | 0 | Passed | `Library/BugCamEvidence/Block1.5-pr6-fix/PlayMode.xml` |
+
+**Unity MCP live:** unavailable this pass (`instance_count=0`). GPU PNG regenerate / Window-button Scene View proof not re-run live; batchmode honesty + nested-coroutine / Host path contracts are green. Day 2 not started.
 
 ### 2026-08-02 — Block 1.4 adaptive epsilon search (`feat/block-1.4-epsilon-search`)
 

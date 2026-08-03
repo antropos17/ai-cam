@@ -175,17 +175,35 @@ namespace BugCam.Evidence
                             environment));
                 }
 
-                // Preserve OutsideSearchRange from Core — never clamp.
-                if (summary.OutsideSearchRange != (run.EpsilonMetres > searchResult.SearchRangeCeilingMetres))
+                // Fail closed: OutsideSearchRange must agree with ε > search ceiling.
+                var expectedOutside =
+                    run.EpsilonMetres > searchResult.SearchRangeCeilingMetres;
+                if (summary.OutsideSearchRange != expectedOutside)
                 {
-                    // Prefer Core summary flag; magnitude check is informational honesty only.
+                    return GhostEvidenceBuildResult.Success(
+                        CreateFailureDocument(
+                            searchResult,
+                            searchIdentity,
+                            GhostEvidenceErrorCodes.BuildFailed,
+                            "OutsideSearchRange inconsistency at fan[" + i +
+                            "]: summary=" + summary.OutsideSearchRange +
+                            " expected=" + expectedOutside +
+                            " (epsilon=" + run.EpsilonMetres.ToString("R", CultureInfo.InvariantCulture) +
+                            " ceiling=" +
+                            searchResult.SearchRangeCeilingMetres.ToString(
+                                "R",
+                                CultureInfo.InvariantCulture) + ").",
+                            ghostBodyLimit,
+                            runId,
+                            environment));
                 }
 
                 var expectedMultiplier = ResolveMultiplier(i, searchResult.ReferenceEpsilonMetres);
                 var expectedAxis = FanAxes[i % FanAxes.Length];
 
-                // Fan order contract: multiplier-major × X/Y/Z (matches Core BuildFanTables).
-                if (!AxesEqual(summary.Axis, expectedAxis) && !AxesEqual(run.Perturbation.Axis, expectedAxis))
+                // Fan order contract: BOTH FanSummary.Axis AND Run.Perturbation.Axis must match.
+                if (!AxesEqual(summary.Axis, expectedAxis) ||
+                    !AxesEqual(run.Perturbation.Axis, expectedAxis))
                 {
                     return GhostEvidenceBuildResult.Success(
                         CreateFailureDocument(
@@ -193,7 +211,36 @@ namespace BugCam.Evidence
                             searchIdentity,
                             GhostEvidenceErrorCodes.BuildFailed,
                             "Fan order mismatch at index " + i +
-                            ": expected axis " + AxisName(expectedAxis) + ".",
+                            ": expected axis " + AxisName(expectedAxis) +
+                            " on both FanSummary and Run.Perturbation.",
+                            ghostBodyLimit,
+                            runId,
+                            environment));
+                }
+
+                // Fail closed: fan epsilon ≈ ReferenceEpsilon × multiplier.
+                if (!FanEpsilonMatchesReference(
+                        run.EpsilonMetres,
+                        searchResult.ReferenceEpsilonMetres,
+                        expectedMultiplier))
+                {
+                    return GhostEvidenceBuildResult.Success(
+                        CreateFailureDocument(
+                            searchResult,
+                            searchIdentity,
+                            GhostEvidenceErrorCodes.BuildFailed,
+                            "Fan epsilon mismatch at index " + i +
+                            ": epsilon=" +
+                            run.EpsilonMetres.ToString("R", CultureInfo.InvariantCulture) +
+                            " expected≈" +
+                            (searchResult.ReferenceEpsilonMetres * expectedMultiplier)
+                                .ToString("R", CultureInfo.InvariantCulture) +
+                            " (ref×" +
+                            expectedMultiplier.ToString("R", CultureInfo.InvariantCulture) +
+                            ", tol=" +
+                            GhostEvidenceSchema.FanEpsilonRelativeTolerance.ToString(
+                                "R",
+                                CultureInfo.InvariantCulture) + ").",
                             ghostBodyLimit,
                             runId,
                             environment));
@@ -416,6 +463,29 @@ namespace BugCam.Evidence
             }
 
             return axis.normalized;
+        }
+
+        /// <summary>
+        /// Relative tolerance on |ε − ref×m| / max(ref×m, 1e-30).
+        /// Documented constant: <see cref="GhostEvidenceSchema.FanEpsilonRelativeTolerance"/>.
+        /// </summary>
+        public static bool FanEpsilonMatchesReference(
+            float epsilonMetres,
+            float referenceEpsilonMetres,
+            float multiplier)
+        {
+            if (float.IsNaN(epsilonMetres) || float.IsInfinity(epsilonMetres) ||
+                float.IsNaN(referenceEpsilonMetres) || float.IsInfinity(referenceEpsilonMetres) ||
+                float.IsNaN(multiplier) || float.IsInfinity(multiplier) ||
+                referenceEpsilonMetres <= 0f || multiplier <= 0f || epsilonMetres < 0f)
+            {
+                return false;
+            }
+
+            var expected = referenceEpsilonMetres * multiplier;
+            var denom = expected > 1e-30f ? expected : 1e-30f;
+            var relative = Math.Abs(epsilonMetres - expected) / denom;
+            return relative <= GhostEvidenceSchema.FanEpsilonRelativeTolerance;
         }
 
         private static bool AxesEqual(Vector3 a, Vector3 b)

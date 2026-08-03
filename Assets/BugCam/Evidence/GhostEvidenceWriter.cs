@@ -10,6 +10,13 @@ namespace BugCam.Evidence
     /// <summary>
     /// Atomic evidence-bundle writer. Invariant culture. No NaN/Inf in JSON —
     /// unavailable values use null / boolean flags. Never fabricate zeros (§15).
+    ///
+    /// Canonical layout under Library/BugCamEvidence/Runs/&lt;run-id&gt;/:
+    ///   manifest.json, metrics.json, summary.md,
+    ///   report/console-report.txt,
+    ///   runs/baseline.json (+ fan-00…fan-14 when retained),
+    ///   visuals/ (PNG filenames from schema; written by capture after success).
+    /// Console report stays at report/console-report.txt (not report.txt).
     /// </summary>
     public static class GhostEvidenceWriter
     {
@@ -40,6 +47,7 @@ namespace BugCam.Evidence
                 Directory.CreateDirectory(runDir);
                 Directory.CreateDirectory(Path.Combine(runDir, GhostEvidenceSchema.ReportDirectoryName));
                 Directory.CreateDirectory(Path.Combine(runDir, GhostEvidenceSchema.VisualsDirectoryName));
+                Directory.CreateDirectory(Path.Combine(runDir, GhostEvidenceSchema.RunsDirectoryName));
                 Directory.CreateDirectory(checkpointDir);
 
                 var metricsPath = Path.Combine(runDir, GhostEvidenceSchema.MetricsFileName);
@@ -49,6 +57,8 @@ namespace BugCam.Evidence
                     runDir,
                     GhostEvidenceSchema.ReportDirectoryName,
                     GhostEvidenceSchema.ConsoleReportFileName);
+
+                WriteRetainedRuns(document, runDir);
 
                 AtomicWrite(metricsPath, BuildMetricsJson(document));
                 AtomicWrite(manifestPath, BuildManifestJson(document, runDir));
@@ -76,6 +86,121 @@ namespace BugCam.Evidence
             }
         }
 
+        /// <summary>
+        /// Serialize retained runs from the canonical model (BaselineRun + Fans[i].Run).
+        /// STABLE → baseline only. Failure → no fake retained runs. No independent metric recompute.
+        /// </summary>
+        private static void WriteRetainedRuns(GhostEvidenceDocument document, string runDir)
+        {
+            var runsDir = Path.Combine(runDir, GhostEvidenceSchema.RunsDirectoryName);
+            if (!document.Success)
+            {
+                // Failure: do not fabricate retained-run JSON.
+                return;
+            }
+
+            var search = document.SearchResult;
+            if (search.Succeeded && search.BaselineRun.Succeeded)
+            {
+                AtomicWrite(
+                    Path.Combine(runsDir, GhostEvidenceSchema.BaselineRunFileName),
+                    BuildRunJson(
+                        "baseline",
+                        -1,
+                        0f,
+                        Vector3.zero,
+                        search.BaselineRun.EpsilonMetres,
+                        false,
+                        search.BaselineRun));
+            }
+
+            // STABLE fabricates no fans — Fans.Length is already 0.
+            for (var i = 0; i < document.Fans.Length; i++)
+            {
+                var fan = document.Fans[i];
+                AtomicWrite(
+                    Path.Combine(runsDir, GhostEvidenceSchema.FanRunFileName(fan.FanIndex)),
+                    BuildRunJson(
+                        "fan",
+                        fan.FanIndex,
+                        fan.Multiplier,
+                        fan.Axis,
+                        fan.EpsilonMetres,
+                        fan.OutsideSearchRange,
+                        fan.Run));
+            }
+        }
+
+        public static string BuildRunJson(
+            string kind,
+            int fanIndex,
+            float multiplier,
+            Vector3 axis,
+            float epsilonMetres,
+            bool outsideSearchRange,
+            RunResult run)
+        {
+            var sb = new StringBuilder(Math.Max(1024, (run.StateFrames?.Length ?? 0) * 12));
+            sb.Append('{');
+            WriteString(sb, "kind", kind, true);
+            WriteInt(sb, "fanIndex", fanIndex);
+            WriteFloat(sb, "multiplier", multiplier);
+            WriteVec3(sb, "axis", axis);
+            WriteFloat(sb, "epsilonMetres", epsilonMetres);
+            WriteBool(sb, "outsideSearchRange", outsideSearchRange);
+            WriteBool(sb, "succeeded", run.Succeeded);
+            WriteString(sb, "errorReason", run.ErrorReason ?? string.Empty);
+            WriteInt(sb, "stepCount", run.StepCount);
+            WriteInt(sb, "bodyCount", run.BodyCount);
+            WriteInt(sb, "stateStride", BugCamConstants.StateStride);
+            WriteFloat(sb, "simulatedTime", run.SimulatedTime);
+            WriteInt(sb, "seed", run.Seed);
+
+            sb.Append(",\"perturbation\":{");
+            WriteInt(sb, "targetBodyId", run.Perturbation.TargetBodyId, true);
+            WriteVec3(sb, "axis", run.Perturbation.Axis);
+            WriteFloat(sb, "magnitudeMetres", run.Perturbation.MagnitudeMetres);
+            sb.Append('}');
+
+            sb.Append(",\"stableBodyIds\":[");
+            var ids = run.StableBodyIds ?? Array.Empty<int>();
+            for (var i = 0; i < ids.Length; i++)
+            {
+                if (i > 0)
+                {
+                    sb.Append(',');
+                }
+
+                sb.Append(ids[i].ToString(CultureInfo.InvariantCulture));
+            }
+
+            sb.Append(']');
+
+            // stateFrames: full [steps × bodies × 14] for viz reproduce. Invariant culture.
+            sb.Append(",\"stateFrames\":[");
+            var frames = run.StateFrames ?? Array.Empty<float>();
+            for (var i = 0; i < frames.Length; i++)
+            {
+                if (i > 0)
+                {
+                    sb.Append(',');
+                }
+
+                var v = frames[i];
+                if (float.IsNaN(v) || float.IsInfinity(v))
+                {
+                    sb.Append("null");
+                }
+                else
+                {
+                    sb.Append(v.ToString("R", CultureInfo.InvariantCulture));
+                }
+            }
+
+            sb.Append("]}");
+            return sb.ToString();
+        }
+
         public static string BuildMetricsJson(GhostEvidenceDocument document)
         {
             var sb = new StringBuilder(4096);
@@ -85,6 +210,7 @@ namespace BugCam.Evidence
             var env = document.Environment;
             var hasReference = HasReferenceEpsilon(search);
             var hasBracketWidth = HasFinalBracketWidth(search);
+            var primaryAvailable = HasPrimaryDivergenceMetrics(document);
 
             sb.Append('{');
             WriteInt(sb, "schemaVersion", document.SchemaVersion, true);
@@ -185,19 +311,82 @@ namespace BugCam.Evidence
             WriteBool(sb, "hasPrimaryFan", document.HasPrimaryFan);
             WriteInt(sb, "primaryFanIndex", document.PrimaryFanIndex);
             WriteInt(sb, "retainedFanCount", document.Fans.Length);
-            WriteInt(sb, "physicalProbeCount", search.PhysicalProbeCount);
-            WriteInt(sb, "cacheHitCount", search.CacheHitCount);
+            if (document.Success && search.Succeeded)
+            {
+                WriteInt(sb, "physicalProbeCount", search.PhysicalProbeCount);
+                WriteInt(sb, "cacheHitCount", search.CacheHitCount);
+            }
+            else
+            {
+                WriteNull(sb, "physicalProbeCount");
+                WriteNull(sb, "cacheHitCount");
+            }
 
             sb.Append(",\"primary\":{");
-            WriteBool(sb, "analyzeSucceeded", primary.Succeeded, true);
-            WriteBool(sb, "hasSignificantDivergence", primary.HasSignificantDivergence);
-            WriteInt(sb, "firstDivergenceFrame", primary.FirstDivergenceFrame);
-            WriteFloat(sb, "maxSpreadMetres", primary.MaxSpreadMetres);
-            WriteInt(sb, "maxSpreadStep", primary.MaxSpreadStep);
-            WriteInt(sb, "maxSpreadBodyId", primary.MaxSpreadBodyId);
-            WriteInt(sb, "affectedBodyCount", primary.AffectedBodyCount);
-            WriteBool(sb, "amplificationDefined", primary.AmplificationDefined);
-            if (primary.AmplificationDefined)
+            WriteBool(sb, "analyzeSucceeded", primary.Succeeded && document.Success, true);
+            WriteBool(sb, "hasSignificantDivergence", primaryAvailable && primary.HasSignificantDivergence);
+            WriteBool(sb, "hasFirstDivergenceFrame", primaryAvailable && primary.FirstDivergenceFrame >= 0);
+            WriteBool(sb, "hasFirstDivergenceBodyId", primaryAvailable && primary.FirstDivergenceBodyId >= 0);
+            WriteBool(sb, "hasMaxSpread", primaryAvailable && primary.MaxSpreadMetres > 0f);
+            WriteBool(sb, "hasMaxSpreadStep", primaryAvailable && primary.MaxSpreadStep >= 0);
+            WriteBool(sb, "hasMaxSpreadBodyId", primaryAvailable && primary.MaxSpreadBodyId >= 0);
+
+            if (primaryAvailable && primary.FirstDivergenceFrame >= 0)
+            {
+                WriteInt(sb, "firstDivergenceFrame", primary.FirstDivergenceFrame);
+            }
+            else
+            {
+                WriteNull(sb, "firstDivergenceFrame");
+            }
+
+            if (primaryAvailable && primary.FirstDivergenceBodyId >= 0)
+            {
+                WriteInt(sb, "firstDivergenceBodyId", primary.FirstDivergenceBodyId);
+            }
+            else
+            {
+                WriteNull(sb, "firstDivergenceBodyId");
+            }
+
+            if (primaryAvailable && primary.MaxSpreadMetres > 0f)
+            {
+                WriteFloat(sb, "maxSpreadMetres", primary.MaxSpreadMetres);
+            }
+            else
+            {
+                WriteNull(sb, "maxSpreadMetres");
+            }
+
+            if (primaryAvailable && primary.MaxSpreadStep >= 0)
+            {
+                WriteInt(sb, "maxSpreadStep", primary.MaxSpreadStep);
+            }
+            else
+            {
+                WriteNull(sb, "maxSpreadStep");
+            }
+
+            if (primaryAvailable && primary.MaxSpreadBodyId >= 0)
+            {
+                WriteInt(sb, "maxSpreadBodyId", primary.MaxSpreadBodyId);
+            }
+            else
+            {
+                WriteNull(sb, "maxSpreadBodyId");
+            }
+
+            if (primaryAvailable)
+            {
+                WriteInt(sb, "affectedBodyCount", primary.AffectedBodyCount);
+            }
+            else
+            {
+                WriteNull(sb, "affectedBodyCount");
+            }
+
+            WriteBool(sb, "amplificationDefined", primaryAvailable && primary.AmplificationDefined);
+            if (primaryAvailable && primary.AmplificationDefined)
             {
                 WriteFloat(sb, "amplification", primary.Amplification);
             }
@@ -206,16 +395,26 @@ namespace BugCam.Evidence
                 WriteNull(sb, "amplification");
             }
 
-            sb.Append(",\"affectedBodyIds\":[");
-            var affected = primary.AffectedBodyIds ?? Array.Empty<int>();
-            for (var i = 0; i < affected.Length; i++)
-            {
-                if (i > 0)
-                {
-                    sb.Append(',');
-                }
+            // Sentinel note: Core DivergenceResult still uses -1 for unavailable int frames/ids
+            // in-memory; machine-facing JSON prefers null when has* is false.
+            WriteString(
+                sb,
+                "unavailableSentinelNote",
+                "JSON uses null when has*=false; Core in-memory ints may still be -1");
 
-                sb.Append(affected[i].ToString(CultureInfo.InvariantCulture));
+            sb.Append(",\"affectedBodyIds\":[");
+            if (primaryAvailable)
+            {
+                var affected = primary.AffectedBodyIds ?? Array.Empty<int>();
+                for (var i = 0; i < affected.Length; i++)
+                {
+                    if (i > 0)
+                    {
+                        sb.Append(',');
+                    }
+
+                    sb.Append(affected[i].ToString(CultureInfo.InvariantCulture));
+                }
             }
 
             sb.Append("]}");
@@ -247,6 +446,7 @@ namespace BugCam.Evidence
                 }
 
                 var fan = document.Fans[i];
+                var fanPrimary = fan.Divergence.Succeeded && fan.Divergence.HasSignificantDivergence;
                 sb.Append('{');
                 WriteInt(sb, "fanIndex", fan.FanIndex, true);
                 WriteFloat(sb, "multiplier", fan.Multiplier);
@@ -254,8 +454,33 @@ namespace BugCam.Evidence
                 WriteFloat(sb, "epsilonMetres", fan.EpsilonMetres);
                 WriteBool(sb, "outsideSearchRange", fan.OutsideSearchRange);
                 WriteBool(sb, "hasSignificantDivergence", fan.Divergence.HasSignificantDivergence);
-                WriteInt(sb, "firstDivergenceFrame", fan.Divergence.FirstDivergenceFrame);
-                WriteFloat(sb, "maxSpreadMetres", fan.Divergence.MaxSpreadMetres);
+                if (fanPrimary && fan.Divergence.FirstDivergenceFrame >= 0)
+                {
+                    WriteInt(sb, "firstDivergenceFrame", fan.Divergence.FirstDivergenceFrame);
+                }
+                else
+                {
+                    WriteNull(sb, "firstDivergenceFrame");
+                }
+
+                if (fanPrimary && fan.Divergence.FirstDivergenceBodyId >= 0)
+                {
+                    WriteInt(sb, "firstDivergenceBodyId", fan.Divergence.FirstDivergenceBodyId);
+                }
+                else
+                {
+                    WriteNull(sb, "firstDivergenceBodyId");
+                }
+
+                if (fanPrimary && fan.Divergence.MaxSpreadMetres > 0f)
+                {
+                    WriteFloat(sb, "maxSpreadMetres", fan.Divergence.MaxSpreadMetres);
+                }
+                else
+                {
+                    WriteNull(sb, "maxSpreadMetres");
+                }
+
                 WriteBool(sb, "amplificationDefined", fan.Divergence.AmplificationDefined);
                 if (fan.Divergence.AmplificationDefined)
                 {
@@ -266,6 +491,7 @@ namespace BugCam.Evidence
                     WriteNull(sb, "amplification");
                 }
 
+                WriteString(sb, "runFile", GhostEvidenceSchema.FanRunRelativePath(fan.FanIndex));
                 sb.Append('}');
             }
 
@@ -276,10 +502,54 @@ namespace BugCam.Evidence
             WriteBool(sb, "hasFirstDivergence", document.DrawSet.HasFirstDivergence);
             WriteBool(sb, "hasMaxSpread", document.DrawSet.HasMaxSpread);
             WriteBool(sb, "hasBounds", document.DrawSet.HasBounds);
+            if (document.DrawSet.HasFirstDivergence && document.DrawSet.FirstDivergenceBodyId >= 0)
+            {
+                WriteInt(sb, "firstDivergenceBodyId", document.DrawSet.FirstDivergenceBodyId);
+            }
+            else
+            {
+                WriteNull(sb, "firstDivergenceBodyId");
+            }
+
+            if (document.DrawSet.HasMaxSpread && document.DrawSet.MaxSpreadBodyId >= 0)
+            {
+                WriteInt(sb, "maxSpreadBodyId", document.DrawSet.MaxSpreadBodyId);
+            }
+            else
+            {
+                WriteNull(sb, "maxSpreadBodyId");
+            }
+
+            if (document.DrawSet.HasFirstDivergence)
+            {
+                WriteVec3(sb, "firstDivergenceWorld", document.DrawSet.FirstDivergenceWorld);
+            }
+
+            if (document.DrawSet.HasMaxSpread)
+            {
+                WriteVec3(sb, "maxSpreadWorld", document.DrawSet.MaxSpreadWorld);
+            }
+
             sb.Append('}');
 
             sb.Append('}');
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// Primary divergence metrics are available only for a successful document whose
+        /// primary analyze succeeded AND reported significant divergence. STABLE / failure
+        /// emit null + has*=false — never fabricated zeros.
+        /// </summary>
+        public static bool HasPrimaryDivergenceMetrics(GhostEvidenceDocument document)
+        {
+            if (document == null || !document.Success)
+            {
+                return false;
+            }
+
+            var primary = document.PrimaryDivergence;
+            return primary.Succeeded && primary.HasSignificantDivergence;
         }
 
         public static string BuildSummaryMarkdown(GhostEvidenceDocument document)
@@ -355,10 +625,12 @@ namespace BugCam.Evidence
             sb.AppendLine("- **Ghost body limit:** " + document.GhostBodyLimit);
             sb.AppendLine("- **Ranked bodies drawn:** " + document.RankedBodies.Length);
 
-            if (document.Success && primary.Succeeded && primary.HasSignificantDivergence)
+            if (HasPrimaryDivergenceMetrics(document))
             {
                 sb.AppendLine("- **First divergence frame:** " + primary.FirstDivergenceFrame);
+                sb.AppendLine("- **First divergence body id:** " + primary.FirstDivergenceBodyId);
                 sb.AppendLine("- **Max spread:** " + MetresLabel(primary.MaxSpreadMetres));
+                sb.AppendLine("- **Max spread body id:** " + primary.MaxSpreadBodyId);
                 if (primary.AmplificationDefined)
                 {
                     sb.AppendLine("- **Amplification:** " + Invariant(primary.Amplification));
@@ -385,6 +657,11 @@ namespace BugCam.Evidence
             sb.AppendLine("| Characterization Range | Fan may reach `1.2 × EpsilonCeiling`; samples above ceiling set `OutsideSearchRange` |");
             sb.AppendLine();
             sb.AppendLine("Machine-readable metrics: `" + GhostEvidenceSchema.MetricsFileName + "`.");
+            sb.AppendLine(
+                "Retained runs: `" + GhostEvidenceSchema.BaselineRunRelativePath +
+                "` + `runs/fan-XX.json` when characterization retains fans.");
+            sb.AppendLine(
+                "Console report: `" + GhostEvidenceSchema.ConsoleReportRelativePath + "`.");
             return sb.ToString();
         }
 
@@ -413,6 +690,32 @@ namespace BugCam.Evidence
             if (!documentSuccess)
             {
                 sb.AppendLine("errorReason=document success=false");
+                sb.AppendLine("verdict=" + result.Verdict);
+                sb.AppendLine("searchRangeStartMetres=null");
+                sb.AppendLine("searchRangeCeilingMetres=null");
+                sb.AppendLine("searchRangeStartMillimetres=null");
+                sb.AppendLine("searchRangeCeilingMillimetres=null");
+                sb.AppendLine("characterizationCeilingMetres=null");
+                sb.AppendLine("characterizationCeilingMillimetres=null");
+                sb.AppendLine("hasLargestStableEpsilon=False");
+                sb.AppendLine("largestStableEpsilonMetres=null");
+                sb.AppendLine("hasSmallestDivergentEpsilon=False");
+                sb.AppendLine("smallestDivergentEpsilonMetres=null");
+                sb.AppendLine("hasThresholdEstimate=False");
+                sb.AppendLine("thresholdEstimateMetres=null");
+                sb.AppendLine("hasReferenceEpsilon=False");
+                sb.AppendLine("referenceEpsilonMetres=null");
+                sb.AppendLine("referenceIsExactThreshold=False");
+                sb.AppendLine("hasFinalBracketWidth=False");
+                sb.AppendLine("finalBracketWidthMetres=null");
+                sb.AppendLine("ladderCount=0");
+                sb.AppendLine("exponentialCount=0");
+                sb.AppendLine("bisectionCount=0");
+                sb.AppendLine("fanCount=0");
+                sb.AppendLine("retainedFanRunCount=0");
+                sb.AppendLine("cacheHitCount=null");
+                sb.AppendLine("physicalProbeCount=null");
+                return sb.ToString();
             }
 
             sb.AppendLine("verdict=" + result.Verdict);
@@ -495,7 +798,14 @@ namespace BugCam.Evidence
 
         private static string BuildManifestJson(GhostEvidenceDocument document, string runDir)
         {
-            var sb = new StringBuilder(512);
+            var sb = new StringBuilder(2048);
+            var search = document.SearchResult;
+            var hasBaseline =
+                document.Success &&
+                search.Succeeded &&
+                search.BaselineRun.Succeeded;
+            var fanCount = document.Success ? document.Fans.Length : 0;
+
             sb.Append('{');
             WriteInt(sb, "schemaVersion", document.SchemaVersion, true);
             WriteString(sb, "kind", document.Kind);
@@ -503,16 +813,99 @@ namespace BugCam.Evidence
             WriteBool(sb, "success", document.Success);
             WriteString(sb, "errorCode", document.ErrorCode ?? string.Empty);
             WriteString(sb, "runDirectory", runDir.Replace('\\', '/'));
+
+            sb.Append(",\"artifacts\":[");
+            AppendArtifact(sb, GhostEvidenceSchema.MetricsFileName, "metrics", true, true);
+            sb.Append(',');
+            AppendArtifact(sb, GhostEvidenceSchema.ManifestFileName, "manifest", true, true);
+            sb.Append(',');
+            AppendArtifact(sb, GhostEvidenceSchema.SummaryFileName, "summary", true, true);
+            sb.Append(',');
+            AppendArtifact(
+                sb,
+                GhostEvidenceSchema.ConsoleReportRelativePath,
+                "consoleReport",
+                true,
+                true);
+            sb.Append(',');
+            AppendArtifact(
+                sb,
+                GhostEvidenceSchema.BaselineRunRelativePath,
+                "baselineRun",
+                hasBaseline,
+                hasBaseline);
+            for (var i = 0; i < fanCount; i++)
+            {
+                sb.Append(',');
+                AppendArtifact(
+                    sb,
+                    GhostEvidenceSchema.FanRunRelativePath(i),
+                    "fanRun",
+                    true,
+                    true);
+            }
+
+            // Visuals: capture writes after Write(); manifest records expected paths + pending status.
+            sb.Append(',');
+            AppendArtifact(
+                sb,
+                GhostEvidenceSchema.VisualRelativePath(GhostEvidenceSchema.OverviewPngFileName),
+                "visualOverview",
+                document.Success,
+                false);
+            sb.Append(',');
+            AppendArtifact(
+                sb,
+                GhostEvidenceSchema.VisualRelativePath(
+                    GhostEvidenceSchema.FirstDivergencePngFileName),
+                "visualFirstSustainedDivergence",
+                document.Success,
+                false);
+            sb.Append(',');
+            AppendArtifact(
+                sb,
+                GhostEvidenceSchema.VisualRelativePath(GhostEvidenceSchema.MaxSpreadPngFileName),
+                "visualMaximumSpread",
+                document.Success,
+                false);
+            sb.Append(',');
+            AppendArtifact(
+                sb,
+                GhostEvidenceSchema.VisualRelativePath(GhostEvidenceSchema.FinalPngFileName),
+                "visualFinalState",
+                document.Success,
+                false);
+
+            sb.Append(']');
+
             WriteString(sb, "metricsFile", GhostEvidenceSchema.MetricsFileName);
             WriteString(sb, "summaryFile", GhostEvidenceSchema.SummaryFileName);
-            WriteString(
-                sb,
-                "consoleReportFile",
-                GhostEvidenceSchema.ReportDirectoryName + "/" +
-                GhostEvidenceSchema.ConsoleReportFileName);
+            WriteString(sb, "consoleReportFile", GhostEvidenceSchema.ConsoleReportRelativePath);
             WriteString(sb, "visualsDirectory", GhostEvidenceSchema.VisualsDirectoryName);
+            WriteString(sb, "runsDirectory", GhostEvidenceSchema.RunsDirectoryName);
+            WriteInt(sb, "retainedFanCount", fanCount);
+            WriteBool(sb, "baselineRunWritten", hasBaseline);
             sb.Append('}');
             return sb.ToString();
+        }
+
+        private static void AppendArtifact(
+            StringBuilder sb,
+            string relativePath,
+            string role,
+            bool required,
+            bool available)
+        {
+            sb.Append('{');
+            WriteString(sb, "path", relativePath, true);
+            WriteString(sb, "role", role);
+            WriteBool(sb, "required", required);
+            WriteBool(sb, "available", available);
+            WriteString(
+                sb,
+                "status",
+                available ? "present" : (required ? "pending" : "omitted"));
+            sb.Append('}');
         }
 
         private static void AtomicWrite(string path, string contents)

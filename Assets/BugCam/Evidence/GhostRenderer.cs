@@ -117,8 +117,10 @@ namespace BugCam.Evidence
 
             var hasFirst = false;
             var firstWorld = Vector3.zero;
+            var firstBodyId = -1;
             var hasMax = false;
             var maxWorld = Vector3.zero;
+            var maxBodyId = -1;
             var markers = new List<GhostMarker>(2);
 
             if (document.HasPrimaryFan)
@@ -127,34 +129,36 @@ namespace BugCam.Evidence
                 var divergence = primary.Divergence;
                 if (divergence.Succeeded && divergence.HasSignificantDivergence)
                 {
-                    // First-divergence marker uses MaxSpreadBodyId when known; AffectedBodyIds are
-                    // ID-sorted (not first-to-diverge), so never prefer AffectedBodyIds[0].
-                    var markerBodyId = divergence.MaxSpreadBodyId >= 0
-                        ? divergence.MaxSpreadBodyId
-                        : ResolveFirstAffected(divergence);
-                    var bodyIndex = GhostTrajectorySampler.FindBodyIndex(
-                        primary.Run,
-                        markerBodyId);
-
-                    if (bodyIndex >= 0 &&
-                        GhostTrajectorySampler.TryGetBodyPosition(
-                            primary.Run,
-                            bodyIndex,
-                            divergence.FirstDivergenceFrame,
-                            out firstWorld))
+                    // First-divergence marker: FirstDivergenceBodyId @ FirstDivergenceFrame.
+                    // Never proxy MaxSpreadBodyId or AffectedBodyIds[0] (ID-sorted, not first-to-diverge).
+                    firstBodyId = divergence.FirstDivergenceBodyId;
+                    if (firstBodyId >= 0)
                     {
-                        hasFirst = true;
-                        markers.Add(new GhostMarker(
-                            "firstDivergence",
-                            firstWorld,
-                            FirstDivergenceColor,
-                            true));
-                        ExpandBounds(ref hasBounds, ref bounds, firstWorld);
+                        var bodyIndex = GhostTrajectorySampler.FindBodyIndex(
+                            primary.Run,
+                            firstBodyId);
+                        if (bodyIndex >= 0 &&
+                            GhostTrajectorySampler.TryGetBodyPosition(
+                                primary.Run,
+                                bodyIndex,
+                                divergence.FirstDivergenceFrame,
+                                out firstWorld))
+                        {
+                            hasFirst = true;
+                            markers.Add(new GhostMarker(
+                                "firstDivergence",
+                                firstWorld,
+                                FirstDivergenceColor,
+                                true,
+                                firstBodyId));
+                            ExpandBounds(ref hasBounds, ref bounds, firstWorld);
+                        }
                     }
 
+                    maxBodyId = divergence.MaxSpreadBodyId;
                     var maxBodyIndex = GhostTrajectorySampler.FindBodyIndex(
                         primary.Run,
-                        divergence.MaxSpreadBodyId);
+                        maxBodyId);
                     if (maxBodyIndex >= 0 &&
                         GhostTrajectorySampler.TryGetBodyPosition(
                             primary.Run,
@@ -167,7 +171,8 @@ namespace BugCam.Evidence
                             "maxSpread",
                             maxWorld,
                             MaxSpreadColor,
-                            true));
+                            true,
+                            maxBodyId));
                         ExpandBounds(ref hasBounds, ref bounds, maxWorld);
                     }
                 }
@@ -179,7 +184,8 @@ namespace BugCam.Evidence
                     "firstDivergence",
                     Vector3.zero,
                     FirstDivergenceColor,
-                    false));
+                    false,
+                    -1));
             }
 
             if (!hasMax)
@@ -188,7 +194,8 @@ namespace BugCam.Evidence
                     "maxSpread",
                     Vector3.zero,
                     MaxSpreadColor,
-                    false));
+                    false,
+                    -1));
             }
 
             return new GhostDrawSet(
@@ -198,8 +205,10 @@ namespace BugCam.Evidence
                 bounds,
                 firstWorld,
                 hasFirst,
+                firstBodyId,
                 maxWorld,
-                hasMax);
+                hasMax,
+                maxBodyId);
         }
 
         public static Color FanColor(int fanIndex)
@@ -236,13 +245,6 @@ namespace BugCam.Evidence
             }
 
             return "A";
-        }
-
-        private static int ResolveFirstAffected(DivergenceResult divergence)
-        {
-            return divergence.AffectedBodyCount > 0
-                ? divergence.AffectedBodyIds[0]
-                : divergence.MaxSpreadBodyId;
         }
 
         private static void ExpandBounds(ref bool hasBounds, ref Bounds bounds, Vector3[] points)

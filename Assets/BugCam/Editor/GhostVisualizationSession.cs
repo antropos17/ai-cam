@@ -89,6 +89,8 @@ namespace BugCam.Editor
             _document = null;
             _evidenceDirectory = string.Empty;
             _metricsPath = string.Empty;
+            // No document ⇒ drop Scene View callback until SetDocument/Ensure re-registers.
+            Unregister();
             SceneView.RepaintAll();
         }
 

@@ -102,15 +102,44 @@ namespace BugCam.Evidence
             }
 
             var primary = document.PrimaryDivergence;
-            sb.AppendLine("primaryAnalyzeSucceeded=" + primary.Succeeded);
-            sb.AppendLine("hasSignificantDivergence=" + primary.HasSignificantDivergence);
-            sb.AppendLine("firstDivergenceFrame=" + primary.FirstDivergenceFrame);
-            sb.AppendLine("maxSpreadMetres=" + Invariant(primary.MaxSpreadMetres));
-            sb.AppendLine("maxSpreadStep=" + primary.MaxSpreadStep);
-            sb.AppendLine("maxSpreadBodyId=" + primary.MaxSpreadBodyId);
-            sb.AppendLine("affectedBodyCount=" + primary.AffectedBodyCount);
-            sb.AppendLine("amplificationDefined=" + primary.AmplificationDefined);
-            if (primary.AmplificationDefined)
+            var primaryAvailable = GhostEvidenceWriter.HasPrimaryDivergenceMetrics(document);
+            sb.AppendLine("primaryAnalyzeSucceeded=" + (primary.Succeeded && document.Success));
+            sb.AppendLine(
+                "hasSignificantDivergence=" +
+                (primaryAvailable && primary.HasSignificantDivergence));
+            sb.AppendLine(
+                "firstDivergenceFrame=" +
+                (primaryAvailable && primary.FirstDivergenceFrame >= 0
+                    ? primary.FirstDivergenceFrame.ToString(CultureInfo.InvariantCulture)
+                    : "null"));
+            sb.AppendLine(
+                "firstDivergenceBodyId=" +
+                (primaryAvailable && primary.FirstDivergenceBodyId >= 0
+                    ? primary.FirstDivergenceBodyId.ToString(CultureInfo.InvariantCulture)
+                    : "null"));
+            sb.AppendLine(
+                "maxSpreadMetres=" +
+                (primaryAvailable && primary.MaxSpreadMetres > 0f
+                    ? Invariant(primary.MaxSpreadMetres)
+                    : "null"));
+            sb.AppendLine(
+                "maxSpreadStep=" +
+                (primaryAvailable && primary.MaxSpreadStep >= 0
+                    ? primary.MaxSpreadStep.ToString(CultureInfo.InvariantCulture)
+                    : "null"));
+            sb.AppendLine(
+                "maxSpreadBodyId=" +
+                (primaryAvailable && primary.MaxSpreadBodyId >= 0
+                    ? primary.MaxSpreadBodyId.ToString(CultureInfo.InvariantCulture)
+                    : "null"));
+            sb.AppendLine(
+                "affectedBodyCount=" +
+                (primaryAvailable
+                    ? primary.AffectedBodyCount.ToString(CultureInfo.InvariantCulture)
+                    : "null"));
+            sb.AppendLine(
+                "amplificationDefined=" + (primaryAvailable && primary.AmplificationDefined));
+            if (primaryAvailable && primary.AmplificationDefined)
             {
                 sb.AppendLine("amplification=" + Invariant(primary.Amplification));
             }
@@ -122,6 +151,16 @@ namespace BugCam.Evidence
             sb.AppendLine("drawPolylineCount=" + document.DrawSet.Polylines.Length);
             sb.AppendLine("hasFirstDivergenceMarker=" + document.DrawSet.HasFirstDivergence);
             sb.AppendLine("hasMaxSpreadMarker=" + document.DrawSet.HasMaxSpread);
+            sb.AppendLine(
+                "firstDivergenceMarkerBodyId=" +
+                (document.DrawSet.HasFirstDivergence
+                    ? document.DrawSet.FirstDivergenceBodyId.ToString(CultureInfo.InvariantCulture)
+                    : "null"));
+            sb.AppendLine(
+                "maxSpreadMarkerBodyId=" +
+                (document.DrawSet.HasMaxSpread
+                    ? document.DrawSet.MaxSpreadBodyId.ToString(CultureInfo.InvariantCulture)
+                    : "null"));
 
             sb.Append("rankedBodyIds=");
             for (var i = 0; i < document.RankedBodies.Length; i++)

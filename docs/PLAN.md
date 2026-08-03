@@ -73,11 +73,19 @@ Rules:
 
 ### Block 1.5 — Ghost visualization
 - Assembly `BugCam.Evidence` (refs `BugCam.Core` only; no UnityEditor). Editor refs Evidence.
-- `GhostEvidenceBuilder` is the single source of truth: re-Analyze baseline vs each retained fan; STABLE fabricates no fans; primary fan = 1.0× search-axis (tie-break index asc).
+- `GhostEvidenceBuilder` is the single source of truth: re-Analyze baseline vs each retained fan; STABLE fabricates no fans; primary fan = 1.0× search-axis (tie-break index asc). Fail-closed: both `FanSummary.Axis` and `Run.Perturbation.Axis` must match expected fan axis; fan ε ≈ `ReferenceEpsilon×multiplier` within `FanEpsilonRelativeTolerance`; `OutsideSearchRange` must agree with ε > search ceiling.
 - Ranking: `PerBodyMaxPositionErrorMetres` desc, `bodyId` asc; `GhostBodyLimit=10`; omit zero-error bodies.
-- Pure-data `GhostDrawSet` / `GhostRenderer`; Scene View via `SceneView.duringSceneGui` + `Handles.DrawAAPolyLine` (baseline white, fans colored, red first-divergence, max-spread marker). No permanent GameObjects; no scene dirty.
-- Evidence bundle under `Library/BugCamEvidence/Runs/<run-id>/` (`metrics.json`, `manifest.json`, `summary.md`, `report/console-report`, `visuals/`) plus `Library/BugCamEvidence/Block1.5` checkpoint pointer. Schema `BugCam.GhostEvidence` v1.
-- Editor window menu `BugCam/Ghost Visualization`. Success path logs `EpsilonSearchReport` + `GhostEvidenceReport`.
+- Core: `DivergenceResult.FirstDivergenceBodyId` = argmax |Δpos| at `FirstDivergenceFrame` (bodyIndex asc tie-break). Independent of `MaxSpreadBodyId`.
+- Pure-data `GhostDrawSet` / `GhostRenderer`; first-div marker samples `FirstDivergenceBodyId` @ first-div frame; max-spread samples `MaxSpreadBodyId` @ max-spread step. Scene View via `SceneView.duringSceneGui` + `Handles.DrawAAPolyLine`. No permanent GameObjects; no scene dirty.
+- Single search pipeline: Window and menu both route through `GhostEvidencePlayModeHost` MonoBehaviour (Unity nested coroutines). Shared busy lock prevents concurrent Window+Host searches. Do not use outer-only `EditorApplication.update` wrappers for nested `IEnumerator` search.
+- Evidence bundle under `Library/BugCamEvidence/Runs/<run-id>/`:
+  `manifest.json`, `metrics.json`, `summary.md`,
+  `report/console-report.txt` (not `report.txt` — keeps console text distinct),
+  `runs/baseline.json` + `runs/fan-00.json`…`fan-14.json` (STABLE → baseline only; failure → no fabricated run JSON),
+  `visuals/overview.png`, `first-sustained-divergence.png`, `maximum-spread.png`, `final-state.png`
+  plus `Library/BugCamEvidence/Block1.5` checkpoint pointer. Schema `BugCam.GhostEvidence` v1.
+- Honesty: when `!document.Success` / unavailable primary, JSON uses `null` + `has*` flags (not fabricated 0). Core in-memory ints may still use `-1` sentinels; machine-facing JSON prefers null. Panel shows `unavailable` for failure/STABLE primary metrics.
+- Editor window menu `BugCam/Ghost Visualization`. Success path logs honest search report + `GhostEvidenceReport`.
 - Day 2 (RetroPlayer / MP4 / evidence cameras / cockpit / SceneSight) not started.
 
 ### DAY 1 CHECKPOINT (hard gate)

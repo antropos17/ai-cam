@@ -16,6 +16,12 @@ namespace BugCam.Editor
     public static class GhostScreenshotCapture
     {
         private static Material s_LineMaterial;
+        private static bool s_LifecycleHooked;
+
+        static GhostScreenshotCapture()
+        {
+            EnsureLifecycleHooks();
+        }
 
         public readonly struct CaptureResult
         {
@@ -290,6 +296,7 @@ namespace BugCam.Editor
 
         private static Material GetLineMaterial()
         {
+            EnsureLifecycleHooks();
             if (s_LineMaterial != null)
             {
                 return s_LineMaterial;
@@ -301,6 +308,7 @@ namespace BugCam.Editor
                 return null;
             }
 
+            // Bounded singleton: at most one cached material; destroyed on reload/quit.
             s_LineMaterial = new Material(shader)
             {
                 hideFlags = HideFlags.HideAndDontSave
@@ -311,6 +319,29 @@ namespace BugCam.Editor
             s_LineMaterial.SetInt("_ZWrite", 0);
             s_LineMaterial.SetInt("_ZTest", (int)CompareFunction.Always);
             return s_LineMaterial;
+        }
+
+        private static void EnsureLifecycleHooks()
+        {
+            if (s_LifecycleHooked)
+            {
+                return;
+            }
+
+            s_LifecycleHooked = true;
+            AssemblyReloadEvents.beforeAssemblyReload += DestroyLineMaterial;
+            EditorApplication.quitting += DestroyLineMaterial;
+        }
+
+        private static void DestroyLineMaterial()
+        {
+            if (s_LineMaterial == null)
+            {
+                return;
+            }
+
+            UnityEngine.Object.DestroyImmediate(s_LineMaterial);
+            s_LineMaterial = null;
         }
 
         private static void DrawPolylinesGl(GhostDrawSet drawSet, bool showBaseline, bool showFans)
