@@ -4,6 +4,7 @@ Chaos testing & repeatability diagnostics for Unity scenes.
 One sentence: perturb initial state → rerun → measure divergence → prove it with a retroactive replay.
 
 ## Source of truth
+- Codebase map: `docs/CODEMAP.md` — read it FIRST in a fresh session (one page: what lives where, key entry points). Updated at every block close; on any mismatch the code wins and the map gets fixed.
 - Product spec: `docs/SPEC.md` (full product). Where SPEC and PLAN differ, `PLAN.md` wins for v0.1; SPEC items beyond PLAN are backlog. Do not re-litigate scope in either direction.
 - Execution plan: `docs/PLAN.md` (2-day plan, work strictly in order of its blocks)
 - Current status: `docs/STATUS.md` (update after every completed block — this file, not chat, carries state between sessions)
