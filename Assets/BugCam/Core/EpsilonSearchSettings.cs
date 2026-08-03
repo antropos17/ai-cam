@@ -8,6 +8,34 @@ namespace BugCam.Core
     /// </summary>
     public readonly struct EpsilonSearchSettings
     {
+        /// <summary>Block 1.4 requires a fixed 12-point log-uniform ladder.</summary>
+        public const int RequiredLadderPointCount = 12;
+
+        /// <summary>Block 1.4 requires exactly five fan multipliers × three axes = 15 fan runs.</summary>
+        public const int RequiredFanMultiplierCount = 5;
+
+        /// <summary>5 multipliers × X/Y/Z.</summary>
+        public const int RequiredFanRunCount = 15;
+
+        /// <summary>
+        /// Canonical ordered fan multipliers. Compared with exact IEEE-754 <c>float ==</c>
+        /// against these same code constants — no tolerance — because they are discrete
+        /// contract tokens, not measured values.
+        /// </summary>
+        private static readonly float[] CanonicalFanMultipliers =
+        {
+            0.8f,
+            0.9f,
+            1f,
+            1.1f,
+            1.2f
+        };
+
+        /// <summary>Defensive copy of the canonical fan multiplier sequence.</summary>
+        public static float[] RequiredFanMultipliers => (float[])CanonicalFanMultipliers.Clone();
+
+        private readonly float[] _fanMultipliers;
+
         public EpsilonSearchSettings(
             float epsilonStartMetres,
             float epsilonGrowthFactor,
@@ -21,7 +49,10 @@ namespace BugCam.Core
             EpsilonCeilingMetres = epsilonCeilingMetres;
             BisectionIterations = bisectionIterations;
             LadderPointCount = ladderPointCount;
-            FanMultipliers = fanMultipliers ?? Array.Empty<float>();
+            // Defensive copy so caller mutation of the input array cannot alter a validated settings instance.
+            _fanMultipliers = fanMultipliers == null || fanMultipliers.Length == 0
+                ? Array.Empty<float>()
+                : (float[])fanMultipliers.Clone();
         }
 
         /// <summary>Metres. First magnitude of the search range.</summary>
@@ -36,7 +67,11 @@ namespace BugCam.Core
 
         public int LadderPointCount { get; }
 
-        public float[] FanMultipliers { get; }
+        /// <summary>Defensive copy of configured fan multipliers (never a live mutable shared array).</summary>
+        public float[] FanMultipliers =>
+            _fanMultipliers.Length == 0
+                ? Array.Empty<float>()
+                : (float[])_fanMultipliers.Clone();
 
         /// <summary>
         /// Characterization may probe up to 1.2 × ceiling via the fan; search range stays
@@ -46,12 +81,18 @@ namespace BugCam.Core
         {
             get
             {
-                var maxMultiplier = 0f;
-                for (var i = 0; i < FanMultipliers.Length; i++)
+                // Use private storage + canonical max so exposed copies cannot drift reporting.
+                if (HasRequiredFanMultipliers(_fanMultipliers))
                 {
-                    if (FanMultipliers[i] > maxMultiplier)
+                    return EpsilonCeilingMetres * CanonicalFanMultipliers[RequiredFanMultiplierCount - 1];
+                }
+
+                var maxMultiplier = 0f;
+                for (var i = 0; i < _fanMultipliers.Length; i++)
+                {
+                    if (_fanMultipliers[i] > maxMultiplier)
                     {
-                        maxMultiplier = FanMultipliers[i];
+                        maxMultiplier = _fanMultipliers[i];
                     }
                 }
 
@@ -66,8 +107,8 @@ namespace BugCam.Core
                 DivergenceSettings.DefaultEpsilonGrowthFactor,
                 DivergenceSettings.DefaultEpsilonCeiling,
                 DivergenceSettings.DefaultBisectionIterations,
-                DivergenceSettings.DefaultLadderPointCount,
-                new[] { 0.8f, 0.9f, 1f, 1.1f, 1.2f });
+                RequiredLadderPointCount,
+                RequiredFanMultipliers);
 
         public static EpsilonSearchSettings FromDivergenceSettings(DivergenceSettings settings)
         {
@@ -77,8 +118,7 @@ namespace BugCam.Core
             }
 
             var source = settings.FanMultipliers;
-            var copy = new float[source.Length];
-            Array.Copy(source, copy, source.Length);
+            var copy = source == null ? null : (float[])source.Clone();
             return new EpsilonSearchSettings(
                 settings.EpsilonStart,
                 settings.EpsilonGrowthFactor,
@@ -120,25 +160,47 @@ namespace BugCam.Core
                 return "BisectionIterations must be at least 1.";
             }
 
-            if (LadderPointCount < 2)
+            if (LadderPointCount != RequiredLadderPointCount)
             {
-                return "LadderPointCount must be at least 2.";
+                return "LadderPointCount must be exactly " + RequiredLadderPointCount + ".";
             }
 
-            if (FanMultipliers == null || FanMultipliers.Length == 0)
+            if (!HasRequiredFanMultipliers(_fanMultipliers))
             {
-                return "FanMultipliers must contain at least one multiplier.";
-            }
-
-            for (var i = 0; i < FanMultipliers.Length; i++)
-            {
-                if (!IsPositiveFinite(FanMultipliers[i]))
-                {
-                    return "Every FanMultipliers entry must be a positive finite number.";
-                }
+                return "FanMultipliers must be exactly {0.8, 0.9, 1.0, 1.1, 1.2} in that order.";
             }
 
             return string.Empty;
+        }
+
+        /// <summary>
+        /// Exact ordered match against the canonical fan multipliers using IEEE-754
+        /// <c>float ==</c> (no tolerance). Rejects null, wrong length, reorder, duplicates,
+        /// altered values, non-finite, and non-positive entries.
+        /// </summary>
+        public static bool HasRequiredFanMultipliers(float[] values)
+        {
+            if (values == null || values.Length != RequiredFanMultiplierCount)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < RequiredFanMultiplierCount; i++)
+            {
+                var value = values[i];
+                if (!IsPositiveFinite(value) || value != CanonicalFanMultipliers[i])
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>Canonical multiplier at index; used by search fan generation (immutable source).</summary>
+        internal static float RequiredFanMultiplierAt(int index)
+        {
+            return CanonicalFanMultipliers[index];
         }
 
         private static bool IsPositiveFinite(float value)

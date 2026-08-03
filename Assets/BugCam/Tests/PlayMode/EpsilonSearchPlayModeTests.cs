@@ -158,7 +158,8 @@ namespace BugCam.Tests
                 Assert.That(
                     verdict == "STABLE WITHIN TESTED RANGE" ||
                     verdict == "NON-MONOTONIC WITHIN TESTED RANGE" ||
-                    verdict == "THRESHOLD BRACKET FOUND",
+                    verdict == "THRESHOLD BRACKET FOUND" ||
+                    verdict == "DIVERGENT AT SEARCH FLOOR",
                     "Unexpected verdict: " + verdict);
 
                 if (verdict != "STABLE WITHIN TESTED RANGE")
@@ -197,13 +198,108 @@ namespace BugCam.Tests
             Assert.That(Arr(completed, "LadderSummaries").Length, Is.EqualTo(12));
         }
 
+        [UnityTest]
+        public IEnumerator RunnerFailsAndDoesNotLaunchNextProbeWhenCleanupTimesOut()
+        {
+            Assert.That(Physics.simulationMode, Is.EqualTo(SimulationMode.Script));
+
+            LogAssert.Expect(
+                LogType.Error,
+                new System.Text.RegularExpressions.Regex(
+                    "BUGCAM_BLOCK_1_4_EPSILON_SEARCH[\\s\\S]*succeeded=False[\\s\\S]*Temporary scene cleanup timed out"));
+
+            var initialSceneCount = SceneManager.sceneCount;
+            object completed = null;
+
+            yield return RunSearch(
+                Vector3.right,
+                StrategyAscendFromStart(),
+                0f,
+                FastStepCount,
+                r => completed = r,
+                alwaysFailCleanup: true);
+
+            Assert.That(completed, Is.Not.Null);
+            Assert.That(Prop<bool>(completed, "Succeeded"), Is.False);
+            Assert.That(Prop<string>(completed, "Verdict"), Is.EqualTo("FAILED"));
+            Assert.That(
+                Prop<string>(completed, "ErrorReason"),
+                Does.Contain("Temporary scene cleanup timed out"));
+            Assert.That(
+                Prop<string>(completed, "ErrorReason"),
+                Does.Contain("no further epsilon probes were run"));
+            Assert.That(
+                Prop<int>(completed, "PhysicalProbeCount"),
+                Is.EqualTo(0),
+                "Timeout must fail before any successful probe is retained; no later probe may run.");
+            Assert.That(Arr(completed, "LadderSummaries"), Is.Empty);
+            Assert.That(Arr(completed, "FanSummaries"), Is.Empty);
+
+            // Harness still requested unload; allow it to settle.
+            yield return WaitCleanup(initialSceneCount);
+            Assert.That(SceneManager.sceneCount, Is.EqualTo(initialSceneCount));
+        }
+
+        [UnityTest]
+        public IEnumerator RunnerLogsFormattedCleanupTimeoutFailure()
+        {
+            Assert.That(Physics.simulationMode, Is.EqualTo(SimulationMode.Script));
+
+            LogAssert.Expect(
+                LogType.Error,
+                new System.Text.RegularExpressions.Regex(
+                    "BUGCAM_BLOCK_1_4_EPSILON_SEARCH[\\s\\S]*succeeded=False[\\s\\S]*Temporary scene cleanup timed out"));
+
+            object completed = null;
+            yield return RunSearch(
+                Vector3.right,
+                StrategyAscendFromStart(),
+                0f,
+                FastStepCount,
+                r => completed = r,
+                alwaysFailCleanup: true);
+
+            Assert.That(Prop<bool>(completed, "Succeeded"), Is.False);
+            yield return WaitCleanup(SceneManager.sceneCount);
+        }
+
+        [UnityTest]
+        public IEnumerator CleanupWaitSucceedsImmediatelyWhenPredicateTrueAtZeroFrameLimit()
+        {
+            var timedOut = true;
+            var runnerType = Type.GetType("BugCam.Core.EpsilonSearchRunner, BugCam.Core");
+            var wait = runnerType.GetMethod(
+                "WaitForSceneCleanup",
+                new[]
+                {
+                    typeof(int),
+                    typeof(Func<int, bool>),
+                    typeof(int),
+                    typeof(Action<bool>)
+                });
+            Assert.That(wait, Is.Not.Null);
+
+            Func<int, bool> alwaysClean = _ => true;
+            Action<bool> onCompleted = value => timedOut = value;
+            var enumerator = (IEnumerator)wait.Invoke(
+                null,
+                new object[] { SceneManager.sceneCount, alwaysClean, 0, onCompleted });
+            while (enumerator.MoveNext())
+            {
+                yield return enumerator.Current;
+            }
+
+            Assert.That(timedOut, Is.False);
+        }
+
         private static IEnumerator RunSearch(
             Vector3 axis,
             object strategy,
             float customStart,
             int stepCount,
             Action<object> onCompleted,
-            Action<int> onProbeSceneCount = null)
+            Action<int> onProbeSceneCount = null,
+            bool alwaysFailCleanup = false)
         {
             var searchType = Type.GetType("BugCam.Core.EpsilonSearch, BugCam.Core");
             var settingsType = Type.GetType("BugCam.Core.EpsilonSearchSettings, BugCam.Core");
@@ -235,7 +331,20 @@ namespace BugCam.Tests
                 scales[i] = 1f;
             }
 
-            var runner = Activator.CreateInstance(runnerType);
+            object runner;
+            if (alwaysFailCleanup)
+            {
+                Func<int, bool> neverClean = _ => false;
+                runner = Activator.CreateInstance(
+                    runnerType,
+                    neverClean,
+                    0);
+            }
+            else
+            {
+                runner = Activator.CreateInstance(runnerType);
+            }
+
             var runMethod = runnerType.GetMethod(
                 "Run",
                 new[]

@@ -23,7 +23,12 @@ namespace BugCam.Core
         Failed = 1,
         StableWithinTestedRange = 2,
         NonMonotonicWithinTestedRange = 3,
-        ThresholdBracketFound = 4
+        ThresholdBracketFound = 4,
+        /// <summary>
+        /// Divergence was observed, but no stable lower bound exists inside the tested range.
+        /// Not a threshold bracket; fan may still characterize around the smallest divergent sample.
+        /// </summary>
+        DivergentAtSearchFloor = 5
     }
 
     /// <summary>
@@ -291,6 +296,8 @@ namespace BugCam.Core
                         return "NON-MONOTONIC WITHIN TESTED RANGE";
                     case EpsilonSearchVerdictKind.ThresholdBracketFound:
                         return "THRESHOLD BRACKET FOUND";
+                    case EpsilonSearchVerdictKind.DivergentAtSearchFloor:
+                        return "DIVERGENT AT SEARCH FLOOR";
                     case EpsilonSearchVerdictKind.Failed:
                         return "FAILED";
                     default:
@@ -317,8 +324,10 @@ namespace BugCam.Core
         public float SmallestDivergentEpsilonMetres { get; }
 
         /// <summary>
-        /// True only for a monotonic bracket. Estimate equals the smallest tested divergent
-        /// epsilon — not an exact mathematical threshold.
+        /// True only for a valid monotonic bracket: finite stable bound, finite divergent bound,
+        /// and <c>stable &lt; divergent</c>. Estimate equals the smallest tested divergent
+        /// epsilon — not an exact mathematical threshold. Never true when only a divergent
+        /// bound exists (see <see cref="EpsilonSearchVerdictKind.DivergentAtSearchFloor"/>).
         /// </summary>
         public bool HasThresholdEstimate { get; }
 

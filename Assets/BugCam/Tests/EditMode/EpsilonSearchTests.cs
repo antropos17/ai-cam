@@ -40,8 +40,282 @@ namespace BugCam.Tests
             Assert.That(Prop<float>(defaults, "EpsilonCeilingMetres"), Is.EqualTo(1e-2f));
             Assert.That(Prop<int>(defaults, "LadderPointCount"), Is.EqualTo(12));
             Assert.That(
+                Prop<float[]>(defaults, "FanMultipliers"),
+                Is.EqualTo(new[] { 0.8f, 0.9f, 1f, 1.1f, 1.2f }));
+            Assert.That(
                 Prop<float>(defaults, "CharacterizationCeilingMetres"),
                 Is.EqualTo(1.2e-2f).Within(1e-9f));
+        }
+
+        [Test]
+        public void SettingsValidationAcceptsExactLadderTwelveAndCanonicalFan()
+        {
+            var settings = MakeSearchSettings(1e-5f, 2f, 1e-2f, 7, 12, DefaultFan());
+            Assert.That(Validate(settings), Is.Empty);
+        }
+
+        [Test]
+        public void SettingsValidationRejectsNonExactLadderCounts()
+        {
+            foreach (var ladder in new[] { 0, 1, 11, 13, int.MaxValue })
+            {
+                var settings = MakeSearchSettings(1e-5f, 2f, 1e-2f, 7, ladder, DefaultFan());
+                Assert.That(
+                    Validate(settings),
+                    Does.Contain("LadderPointCount"),
+                    "ladder=" + ladder);
+            }
+        }
+
+        [Test]
+        public void SettingsValidationRejectsNonCanonicalFanArrays()
+        {
+            Assert.That(
+                Validate(MakeSearchSettings(1e-5f, 2f, 1e-2f, 7, 12, null)),
+                Does.Contain("FanMultipliers"));
+            Assert.That(
+                Validate(MakeSearchSettings(1e-5f, 2f, 1e-2f, 7, 12, Array.Empty<float>())),
+                Does.Contain("FanMultipliers"));
+            Assert.That(
+                Validate(MakeSearchSettings(1e-5f, 2f, 1e-2f, 7, 12, new[] { 0.8f, 0.9f, 1f, 1.1f })),
+                Does.Contain("FanMultipliers"));
+            Assert.That(
+                Validate(MakeSearchSettings(
+                    1e-5f, 2f, 1e-2f, 7, 12, new[] { 0.8f, 0.9f, 1f, 1.1f, 1.2f, 1.3f })),
+                Does.Contain("FanMultipliers"));
+            Assert.That(
+                Validate(MakeSearchSettings(
+                    1e-5f, 2f, 1e-2f, 7, 12, new[] { 1.2f, 1.1f, 1f, 0.9f, 0.8f })),
+                Does.Contain("FanMultipliers"));
+            Assert.That(
+                Validate(MakeSearchSettings(
+                    1e-5f, 2f, 1e-2f, 7, 12, new[] { 0.8f, 0.9f, 1f, 1.1f, 1.1f })),
+                Does.Contain("FanMultipliers"));
+            Assert.That(
+                Validate(MakeSearchSettings(
+                    1e-5f, 2f, 1e-2f, 7, 12, new[] { 0.8f, 0.9f, 1f, 1.1f, 1.25f })),
+                Does.Contain("FanMultipliers"));
+            Assert.That(
+                Validate(MakeSearchSettings(
+                    1e-5f, 2f, 1e-2f, 7, 12, new[] { 0.8f, 0.9f, 1f, 1.1f, 0f })),
+                Does.Contain("FanMultipliers"));
+            Assert.That(
+                Validate(MakeSearchSettings(
+                    1e-5f, 2f, 1e-2f, 7, 12, new[] { 0.8f, 0.9f, 1f, 1.1f, -1.2f })),
+                Does.Contain("FanMultipliers"));
+            Assert.That(
+                Validate(MakeSearchSettings(
+                    1e-5f, 2f, 1e-2f, 7, 12, new[] { 0.8f, 0.9f, 1f, 1.1f, float.NaN })),
+                Does.Contain("FanMultipliers"));
+            Assert.That(
+                Validate(MakeSearchSettings(
+                    1e-5f,
+                    2f,
+                    1e-2f,
+                    7,
+                    12,
+                    new[] { 0.8f, 0.9f, 1f, 1.1f, float.PositiveInfinity })),
+                Does.Contain("FanMultipliers"));
+        }
+
+        [Test]
+        public void DivergenceAtEveryTestedEpsilonReportsUnbracketedOutcomeWithoutThresholdEstimate()
+        {
+            var search = CreateSearch();
+            var result = Drive(search, (phase, epsilon, axis, isBaseline) =>
+            {
+                if (isBaseline)
+                {
+                    return BaselineOutcome();
+                }
+
+                // Every perturbed sample diverges — no stable lower bound exists.
+                return NeedsFrames(phase) ? Framed(true, epsilon, axis) : Compact(true);
+            });
+
+            Assert.That(Prop<bool>(result, "Succeeded"), Is.True, Prop<string>(result, "ErrorReason"));
+            Assert.That(Prop<string>(result, "Verdict"), Is.EqualTo("DIVERGENT AT SEARCH FLOOR"));
+            Assert.That(Prop<bool>(result, "HasThresholdEstimate"), Is.False);
+            Assert.That(Prop<bool>(result, "HasLargestStableEpsilon"), Is.False);
+            Assert.That(Prop<bool>(result, "HasSmallestDivergentEpsilon"), Is.True);
+            Assert.That(Prop<float>(result, "ThresholdEstimateMetres"), Is.EqualTo(0f));
+            Assert.That(Prop<float>(result, "FinalBracketWidthMetres"), Is.EqualTo(0f));
+            Assert.That(Prop<bool>(result, "ReferenceIsExactThreshold"), Is.False);
+            Assert.That(Prop<string>(result, "ErrorReason"), Is.Empty);
+            Assert.That(Arr(result, "LadderSummaries").Length, Is.EqualTo(12));
+            Assert.That(Arr(result, "ExponentialSummaries").Length, Is.GreaterThan(0));
+            Assert.That(Arr(result, "BisectionSummaries"), Is.Empty);
+            Assert.That(Arr(result, "FanSummaries").Length, Is.EqualTo(15));
+            Assert.That(Arr(result, "FanRuns").Length, Is.EqualTo(15));
+            Assert.That(
+                Prop<float>(result, "ReferenceEpsilonMetres"),
+                Is.EqualTo(Prop<float>(result, "SmallestDivergentEpsilonMetres")));
+        }
+
+        [Test]
+        public void FanRequestGenerationIsExactlyFifteenUniqueAxisMultiplierPairs()
+        {
+            var search = CreateSearch();
+            var fanKeys = new List<string>();
+            var result = Drive(search, (phase, epsilon, axis, isBaseline) =>
+            {
+                if (isBaseline)
+                {
+                    return BaselineOutcome();
+                }
+
+                if (phaseName(phase) == "Fan")
+                {
+                    fanKeys.Add(AxisLabel(axis) + ":" + epsilon.ToString("R"));
+                }
+
+                var diverged = epsilon >= 3e-4f;
+                return NeedsFrames(phase) ? Framed(diverged, epsilon, axis) : Compact(diverged);
+            });
+
+            Assert.That(fanKeys.Count, Is.EqualTo(15));
+            CollectionAssert.AllItemsAreUnique(fanKeys);
+
+            var reference = Prop<float>(result, "ReferenceEpsilonMetres");
+            var expected = new List<string>();
+            foreach (var m in new[] { 0.8f, 0.9f, 1f, 1.1f, 1.2f })
+            {
+                var eps = reference * m;
+                expected.Add("X:" + eps.ToString("R"));
+                expected.Add("Y:" + eps.ToString("R"));
+                expected.Add("Z:" + eps.ToString("R"));
+            }
+
+            Assert.That(fanKeys, Is.EqualTo(expected));
+        }
+
+        [Test]
+        public void RetainedFullRunsEqualBaselinePlusFifteenFanRuns()
+        {
+            var search = CreateSearch();
+            var result = Drive(search, (phase, epsilon, axis, isBaseline) =>
+            {
+                if (isBaseline)
+                {
+                    return BaselineOutcome();
+                }
+
+                var diverged = epsilon >= 3e-4f;
+                return NeedsFrames(phase) ? Framed(diverged, epsilon, axis) : Compact(diverged);
+            });
+
+            Assert.That(Prop<bool>(Prop<object>(result, "BaselineRun"), "Succeeded"), Is.True);
+            Assert.That(Arr(result, "FanRuns").Length, Is.EqualTo(15));
+            Assert.That(Arr(result, "FanSummaries").Length, Is.EqualTo(15));
+        }
+
+        [Test]
+        public void MutatingCallerFanArrayAfterSettingsConstructionDoesNotAlterFanGeneration()
+        {
+            var callerFan = new[] { 0.8f, 0.9f, 1f, 1.1f, 1.2f };
+            var settings = MakeSearchSettings(1e-5f, 2f, 1e-2f, 7, 12, callerFan);
+            callerFan[4] = 9f;
+            Assert.That(Validate(settings), Is.Empty);
+            Assert.That(Prop<float[]>(settings, "FanMultipliers")[4], Is.EqualTo(1.2f));
+            Assert.That(
+                Prop<float>(settings, "CharacterizationCeilingMetres"),
+                Is.EqualTo(1.2e-2f).Within(1e-9f));
+
+            var exposed = Prop<float[]>(settings, "FanMultipliers");
+            exposed[4] = 9f;
+            Assert.That(
+                Prop<float>(settings, "CharacterizationCeilingMetres"),
+                Is.EqualTo(1.2e-2f).Within(1e-9f));
+            Assert.That(Prop<float[]>(settings, "FanMultipliers")[4], Is.EqualTo(1.2f));
+
+            var search = CreateSearch(settings);
+            var fanKeys = new List<string>();
+            var result = Drive(search, (phase, epsilon, axis, isBaseline) =>
+            {
+                if (isBaseline)
+                {
+                    return BaselineOutcome();
+                }
+
+                if (phaseName(phase) == "Fan")
+                {
+                    fanKeys.Add(AxisLabel(axis) + ":" + epsilon.ToString("R"));
+                }
+
+                var diverged = epsilon >= 3e-4f;
+                return NeedsFrames(phase) ? Framed(diverged, epsilon, axis) : Compact(diverged);
+            });
+
+            Assert.That(Prop<bool>(result, "Succeeded"), Is.True, Prop<string>(result, "ErrorReason"));
+            Assert.That(fanKeys.Count, Is.EqualTo(15));
+            var reference = Prop<float>(result, "ReferenceEpsilonMetres");
+            Assert.That(fanKeys[12], Is.EqualTo("X:" + (reference * 1.2f).ToString("R")));
+            Assert.That(fanKeys, Has.None.Contain(":" + (reference * 9f).ToString("R")));
+        }
+
+        [Test]
+        public void CustomStartDivergentStillUsesLadderStableBoundForThresholdBracket()
+        {
+            var strategyType = Type.GetType("BugCam.Core.EpsilonSearchStrategy, BugCam.Core");
+            var customStrategy = Enum.ToObject(strategyType, 1); // AscendFromCustomStart
+            var search = CreateSearch(
+                settings: null,
+                targetBodyId: 49,
+                axis: Vector3.right,
+                strategy: customStrategy,
+                customStart: 5e-4f);
+
+            var result = Drive(search, (phase, epsilon, axis, isBaseline) =>
+            {
+                if (isBaseline)
+                {
+                    return BaselineOutcome();
+                }
+
+                // Ladder: low epsilons stable, high divergent. Custom exponential start (5e-4)
+                // is already divergent — must still reconcile ladder stables into a bracket.
+                var diverged = epsilon >= 3e-4f;
+                return NeedsFrames(phase) ? Framed(diverged, epsilon, axis) : Compact(diverged);
+            });
+
+            Assert.That(Prop<bool>(result, "Succeeded"), Is.True, Prop<string>(result, "ErrorReason"));
+            Assert.That(Prop<string>(result, "Verdict"), Is.EqualTo("THRESHOLD BRACKET FOUND"));
+            Assert.That(Prop<bool>(result, "HasThresholdEstimate"), Is.True);
+            Assert.That(Prop<bool>(result, "HasLargestStableEpsilon"), Is.True);
+            Assert.That(Prop<bool>(result, "HasSmallestDivergentEpsilon"), Is.True);
+            Assert.That(
+                Prop<float>(result, "LargestStableEpsilonMetres"),
+                Is.LessThan(Prop<float>(result, "SmallestDivergentEpsilonMetres")));
+            Assert.That(Prop<float>(result, "FinalBracketWidthMetres"), Is.GreaterThanOrEqualTo(0f));
+        }
+
+        [Test]
+        public void NonMonotonicBracketWidthIsUndefinedSafeZeroWithoutThresholdEstimate()
+        {
+            var search = CreateSearch();
+            var result = Drive(search, (phase, epsilon, axis, isBaseline) =>
+            {
+                if (isBaseline)
+                {
+                    return BaselineOutcome();
+                }
+
+                bool diverged;
+                if (phaseName(phase) == "Ladder")
+                {
+                    diverged = epsilon >= 1e-4f && epsilon <= 1e-3f;
+                }
+                else
+                {
+                    diverged = epsilon >= 1e-4f;
+                }
+
+                return NeedsFrames(phase) ? Framed(diverged, epsilon, axis) : Compact(diverged);
+            });
+
+            Assert.That(Prop<string>(result, "Verdict"), Is.EqualTo("NON-MONOTONIC WITHIN TESTED RANGE"));
+            Assert.That(Prop<bool>(result, "HasThresholdEstimate"), Is.False);
+            Assert.That(Prop<float>(result, "FinalBracketWidthMetres"), Is.EqualTo(0f));
         }
 
         [Test]
@@ -98,7 +372,10 @@ namespace BugCam.Tests
 
             Assert.That(estimate, Is.EqualTo(smallestDivergent));
             Assert.That(estimate, Is.EqualTo(Prop<float>(result, "ReferenceEpsilonMetres")));
+            Assert.That(float.IsNaN(largestStable), Is.False);
+            Assert.That(float.IsNaN(smallestDivergent), Is.False);
             Assert.That(smallestDivergent, Is.GreaterThan(largestStable));
+            Assert.That(width, Is.GreaterThanOrEqualTo(0f));
             Assert.That(width, Is.EqualTo(smallestDivergent - largestStable).Within(1e-9f));
             Assert.That(Arr(result, "FanSummaries").Length, Is.EqualTo(15));
             Assert.That(Arr(result, "FanRuns").Length, Is.EqualTo(15));
@@ -302,9 +579,16 @@ namespace BugCam.Tests
             });
 
             Assert.That(Prop<string>(result, "Verdict"), Is.EqualTo("THRESHOLD BRACKET FOUND"));
+            Assert.That(Prop<bool>(result, "HasThresholdEstimate"), Is.True);
+            Assert.That(Prop<bool>(result, "HasLargestStableEpsilon"), Is.True);
+            Assert.That(Prop<bool>(result, "HasSmallestDivergentEpsilon"), Is.True);
+            Assert.That(
+                Prop<float>(result, "LargestStableEpsilonMetres"),
+                Is.LessThan(Prop<float>(result, "SmallestDivergentEpsilonMetres")));
             Assert.That(
                 Prop<float>(result, "ThresholdEstimateMetres"),
                 Is.EqualTo(Prop<float>(result, "SmallestDivergentEpsilonMetres")));
+            Assert.That(Prop<float>(result, "FinalBracketWidthMetres"), Is.GreaterThanOrEqualTo(0f));
             Assert.That(Prop<bool>(result, "ReferenceIsExactThreshold"), Is.False);
             Assert.That(
                 Prop<float>(result, "SearchRangeStartMetres"),

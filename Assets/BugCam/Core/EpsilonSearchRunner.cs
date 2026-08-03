@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -10,7 +11,30 @@ namespace BugCam.Core
     /// </summary>
     public sealed class EpsilonSearchRunner
     {
+        public const int DefaultCleanupFrameLimit = 120;
+
+        public const string CleanupTimeoutErrorMarker =
+            "Temporary scene cleanup timed out";
+
         private readonly SimulationHarness _harness = new SimulationHarness();
+        private readonly Func<int, bool> _isCleanupComplete;
+        private readonly int _cleanupFrameLimit;
+
+        /// <summary>Production runner: real scene-count cleanup gate, 120-frame limit.</summary>
+        public EpsilonSearchRunner()
+            : this(DefaultIsCleanupComplete, DefaultCleanupFrameLimit)
+        {
+        }
+
+        /// <summary>
+        /// Test seam: inject cleanup predicate and frame limit so timeout can be simulated
+        /// without waiting 120 real frames (e.g. predicate always false, limit 0).
+        /// </summary>
+        public EpsilonSearchRunner(Func<int, bool> isCleanupComplete, int cleanupFrameLimit)
+        {
+            _isCleanupComplete = isCleanupComplete ?? DefaultIsCleanupComplete;
+            _cleanupFrameLimit = cleanupFrameLimit < 0 ? 0 : cleanupFrameLimit;
+        }
 
         /// <summary>Result of the most recent <see cref="Run"/> completion.</summary>
         public EpsilonSearchResult LastResult { get; private set; }
@@ -68,7 +92,26 @@ namespace BugCam.Core
 
                 var simRequest = new SimulationRequest(bodies, stepCount, perturbation);
                 var harnessResult = _harness.Run(simRequest);
-                yield return WaitForSceneCleanup(sceneCountBefore);
+
+                var cleanupTimedOut = false;
+                yield return WaitForSceneCleanup(
+                    sceneCountBefore,
+                    _isCleanupComplete,
+                    _cleanupFrameLimit,
+                    timedOut => cleanupTimedOut = timedOut);
+
+                if (cleanupTimedOut)
+                {
+                    var reason =
+                        CleanupTimeoutErrorMarker +
+                        " after " +
+                        _cleanupFrameLimit +
+                        " frames; no further epsilon probes were run.";
+                    search.SubmitProbeResult(request, EpsilonProbeOutcome.Failure(reason));
+                    LastResult = search.BuildResult();
+                    Debug.LogError(EpsilonSearchReport.Format(LastResult));
+                    yield break;
+                }
 
                 if (!harnessResult.Succeeded)
                 {
@@ -134,19 +177,64 @@ namespace BugCam.Core
 
         /// <summary>
         /// Wait until Unity finishes unloading the previous local Physics3D scene.
+        /// On timeout, <paramref name="onCompleted"/> is invoked with <c>true</c> and the
+        /// caller must stop the search — the next probe must not start.
         /// </summary>
         public static IEnumerator WaitForSceneCleanup(int sceneCountBeforeProbe)
         {
-            // UnloadSceneAsync is deferred; allow several frames for the count to return.
-            for (var frame = 0; frame < 120; frame++)
+            var timedOut = false;
+            yield return WaitForSceneCleanup(
+                sceneCountBeforeProbe,
+                DefaultIsCleanupComplete,
+                DefaultCleanupFrameLimit,
+                value => timedOut = value);
+            // Legacy callers ignore timeout; production Run uses the overload that reports it.
+            if (timedOut)
             {
-                if (SceneManager.sceneCount <= sceneCountBeforeProbe)
+                Debug.LogError(
+                    CleanupTimeoutErrorMarker +
+                    " after " +
+                    DefaultCleanupFrameLimit +
+                    " frames.");
+            }
+        }
+
+        /// <summary>
+        /// Cleanup wait with injectable predicate/limit for deterministic timeout tests.
+        /// </summary>
+        public static IEnumerator WaitForSceneCleanup(
+            int sceneCountBeforeProbe,
+            Func<int, bool> isCleanupComplete,
+            int frameLimit,
+            Action<bool> onCompleted)
+        {
+            var predicate = isCleanupComplete ?? DefaultIsCleanupComplete;
+            var limit = frameLimit < 0 ? 0 : frameLimit;
+
+            for (var frame = 0; frame < limit; frame++)
+            {
+                if (predicate(sceneCountBeforeProbe))
                 {
+                    onCompleted?.Invoke(false);
                     yield break;
                 }
 
                 yield return null;
             }
+
+            // Zero-frame limit and exhausted waits both take a final check.
+            if (predicate(sceneCountBeforeProbe))
+            {
+                onCompleted?.Invoke(false);
+                yield break;
+            }
+
+            onCompleted?.Invoke(true);
+        }
+
+        private static bool DefaultIsCleanupComplete(int sceneCountBeforeProbe)
+        {
+            return SceneManager.sceneCount <= sceneCountBeforeProbe;
         }
     }
 }

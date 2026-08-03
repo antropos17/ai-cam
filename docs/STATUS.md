@@ -40,6 +40,15 @@
 
 EditMode +13 (`EpsilonSearchTests`). PlayMode +5 (`EpsilonSearchPlayModeTests`). Blocks 1.1–1.3 regressions included.
 
+**Review-fix (merge blockers):** unbracketed divergent samples report `DIVERGENT AT SEARCH FLOOR` without `HasThresholdEstimate`; ladder locked to exactly 12; fan locked to `{0.8,0.9,1.0,1.1,1.2}` (15 runs); cleanup timeout is a structured search failure that stops further probes.
+
+**VERIFIED FACT — batchmode Unity `6000.3.21f1`** (`run-checkpoint.ps1 -Suite All -EvidenceDir Library\BugCamEvidence\Block1.4-review-fix`, exit 0):
+
+| Suite | total | passed | failed | result | XML |
+|---|---|---|---|---|---|
+| EditMode | 67 | 67 | 0 | Passed | `Library/BugCamEvidence/Block1.4-review-fix/EditMode.xml` |
+| PlayMode | 19 | 19 | 0 | Passed | `Library/BugCamEvidence/Block1.4-review-fix/PlayMode.xml` |
+
 **Day 1 hard checkpoint:** NOT PASSED (Block 1.5 ghost visualization still required for Scene View fan).
 
 ### 2026-08-02 — Block 1.3 review-fix (PR #4, `feat/block-1.3-divergence-engine`)

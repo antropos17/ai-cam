@@ -398,17 +398,14 @@ namespace BugCam.Core
                 return EpsilonSearchResult.Failure(_errorReason);
             }
 
-            var hasThreshold = _verdict == EpsilonSearchVerdictKind.ThresholdBracketFound;
+            var hasValidBracket = HasValidThresholdBracket();
+            var hasThreshold =
+                _verdict == EpsilonSearchVerdictKind.ThresholdBracketFound && hasValidBracket;
             var thresholdEstimate = hasThreshold ? _smallestDivergent : 0f;
-            var bracketWidth = 0f;
-            if (_hasLargestStable && _hasSmallestDivergent)
-            {
-                bracketWidth = _smallestDivergent - _largestStable;
-            }
-            else if (_hasSmallestDivergent)
-            {
-                bracketWidth = _smallestDivergent - _settings.EpsilonStartMetres;
-            }
+            // Bracket width is defined only for a valid threshold bracket (non-negative).
+            var bracketWidth = hasThreshold
+                ? _smallestDivergent - _largestStable
+                : 0f;
 
             return new EpsilonSearchResult(
                 true,
@@ -601,7 +598,9 @@ namespace BugCam.Core
                 SeedBracketFromSummaries(_exponential);
             }
 
-            if (!_hasSmallestDivergent)
+            // Reconcile ladder samples whenever the exponential bracket is incomplete
+            // (e.g. AscendFromCustomStart that diverges immediately but ladder had stables).
+            if (!HasValidThresholdBracket())
             {
                 SeedBracketFromSummaries(_ladder);
             }
@@ -614,13 +613,11 @@ namespace BugCam.Core
                 return;
             }
 
-            if (!_hasLargestStable)
+            if (!HasValidThresholdBracket())
             {
-                // Divergent at/under every exponential sample — threshold estimate is the
-                // smallest divergent tested; no bisection below the search floor.
-                _verdict = EpsilonSearchVerdictKind.ThresholdBracketFound;
-                _referenceEpsilon = _smallestDivergent;
-                BeginFan(_referenceEpsilon);
+                // Divergence without a stable lower bound — honest non-threshold outcome.
+                // Do not invent a stable bound from zero, start, or any untested value.
+                BeginUnbracketedDivergentFan();
                 return;
             }
 
@@ -630,9 +627,62 @@ namespace BugCam.Core
 
         private void FinishMonotonicBracket()
         {
+            if (!HasValidThresholdBracket())
+            {
+                if (_hasLargestStable && _hasSmallestDivergent)
+                {
+                    // Both bounds exist but ordering is invalid — not a search-floor case.
+                    _verdict = EpsilonSearchVerdictKind.NonMonotonicWithinTestedRange;
+                    _referenceEpsilon = _smallestDivergent;
+                    BeginFan(_referenceEpsilon);
+                    return;
+                }
+
+                BeginUnbracketedDivergentFan();
+                return;
+            }
+
             _verdict = EpsilonSearchVerdictKind.ThresholdBracketFound;
             _referenceEpsilon = _smallestDivergent;
             BeginFan(_referenceEpsilon);
+        }
+
+        private void BeginUnbracketedDivergentFan()
+        {
+            if (!_hasSmallestDivergent ||
+                float.IsNaN(_smallestDivergent) ||
+                float.IsInfinity(_smallestDivergent) ||
+                !(_smallestDivergent > 0f))
+            {
+                Fail("Divergent-at-search-floor outcome requires a finite positive divergent sample.");
+                return;
+            }
+
+            _verdict = EpsilonSearchVerdictKind.DivergentAtSearchFloor;
+            _referenceEpsilon = _smallestDivergent;
+            BeginFan(_referenceEpsilon);
+        }
+
+        /// <summary>
+        /// A threshold bracket exists only when both bounds are present, finite, and
+        /// strictly ordered stable &lt; divergent.
+        /// </summary>
+        private bool HasValidThresholdBracket()
+        {
+            if (!_hasLargestStable || !_hasSmallestDivergent)
+            {
+                return false;
+            }
+
+            if (float.IsNaN(_largestStable) ||
+                float.IsInfinity(_largestStable) ||
+                float.IsNaN(_smallestDivergent) ||
+                float.IsInfinity(_smallestDivergent))
+            {
+                return false;
+            }
+
+            return _largestStable < _smallestDivergent;
         }
 
         private void BeginFan(float referenceEpsilon)
@@ -650,15 +700,15 @@ namespace BugCam.Core
 
         private void BuildFanTables(float referenceEpsilon)
         {
-            var multipliers = _settings.FanMultipliers;
-            var count = multipliers.Length * FanAxes.Length;
+            // Always use the immutable canonical multipliers — never a caller-owned array.
+            var count = EpsilonSearchSettings.RequiredFanRunCount;
             _fanEpsilons = new float[count];
             _fanAxes = new Vector3[count];
             _fanOutside = new bool[count];
             var index = 0;
-            for (var m = 0; m < multipliers.Length; m++)
+            for (var m = 0; m < EpsilonSearchSettings.RequiredFanMultiplierCount; m++)
             {
-                var epsilon = referenceEpsilon * multipliers[m];
+                var epsilon = referenceEpsilon * EpsilonSearchSettings.RequiredFanMultiplierAt(m);
                 for (var a = 0; a < FanAxes.Length; a++)
                 {
                     _fanEpsilons[index] = epsilon;
