@@ -6,7 +6,7 @@
 - Active block: 1.5 (ghost visualization on `feat/block-1.5-ghost-visualization`)
 - Day 1 checkpoint: PASSED (Scene View fan + success-path honest reports + evidence bundle)
 - Day 2 checkpoint: NOT PASSED — Day 2 not started (no RetroPlayer, MP4, evidence cameras, camera-plan, cockpit, SceneSight)
-- PR #6 merge-blocker fix tip: see Evidence log 2026-08-03 (pr6-fix) — Window→Host nested coroutine, canonical `runs/*.json` + visual filenames, null-gated primary metrics, `FirstDivergenceBodyId` marker
+- PR #6 merge-blocker fix tip: `df38791d8baab95fc9d0850bae8fcf478318ae77` — Window→Host nested coroutine, canonical `runs/*.json` + visual filenames, null-gated primary metrics, `FirstDivergenceBodyId` marker
 
 ## Completed blocks
 | Block | Result | Verification | Commit |
@@ -16,7 +16,7 @@
 | 1.2 | StateRecorder + RunResult + kinematic transform replay VERIFY | See Evidence log 2026-08-02 (Block 1.2) | squash `a90765a` (#3) |
 | 1.3 | DivergenceSettings + DivergenceEngine synthetic + RunResult integration + review-fix | See Evidence log 2026-08-02 (Block 1.3 review-fix) | squash `6d676ad` (#4) |
 | 1.4 | Adaptive epsilon search (step-driven) + partial PlayMode VERIFY (fail-closed bracket/fan + ±1 growth-step Ratio≤2; VERIFY (a) OPEN) | See Evidence log 2026-08-02 (Block 1.4 verify-fix) | merge SHA `1bd10113eeeb8376ae31379b391e8c408d2884a8` (#5) |
-| 1.5 | Ghost visualization + evidence bundle (`BugCam.Evidence` + Scene View drawer + Ghost Visualization window) | See Evidence log 2026-08-02 (Block 1.5) + review-fix | tip on `feat/block-1.5-ghost-visualization` (PR #6) |
+| 1.5 | Ghost visualization + evidence bundle (`BugCam.Evidence` + Scene View drawer + Ghost Visualization window) | See Evidence log 2026-08-03 (pr6-fix) | tip `df38791` on `feat/block-1.5-ghost-visualization` (PR #6 OPEN) |
 
 ## Open findings / blockers
 - RESOLVED (Block 1.4 design): fan samples may exceed `EpsilonCeiling` up to `1.2 × EpsilonCeiling`. Magnitudes are **not** silently clamped; every fan sample above the search ceiling is marked `OutsideSearchRange=true`. Search range and characterization range are reported separately.
@@ -83,7 +83,7 @@ EditMode +1 vs prior tip (`ScreenshotCaptureFailsClosedOnBlankOrWritesDistinctPn
 
 ### 2026-08-03 — Block 1.5 PR #6 merge-blocker fix (`feat/block-1.5-ghost-visualization`)
 
-**Base tip before fix:** `459e7ee586281cda62ae9c43eeba489ebdec6946`. **Base main:** `1bd10113eeeb8376ae31379b391e8c408d2884a8`.
+**Base tip before fix:** `459e7ee586281cda62ae9c43eeba489ebdec6946`. **Fix tip:** `df38791d8baab95fc9d0850bae8fcf478318ae77`. **Base main:** `1bd10113eeeb8376ae31379b391e8c408d2884a8`.
 
 **Blockers fixed:**
 1. **Nested Editor coroutine:** removed broken `EditorCoroutineUtility`; Window routes through `GhostEvidencePlayModeHost` MonoBehaviour nested coroutines; shared `BugCam.GhostSearch.Busy` lock.
