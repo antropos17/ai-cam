@@ -64,9 +64,13 @@ namespace BugCam.Core
         // drift, so it counts as much as a full position-threshold breach.
         public const float DefaultWeightSleep = 1f;
 
-        // 0.5. Why: PROVISIONAL — Block 2.1 owns the evidence-camera scoring scale and ratifies
-        // this number. It exists here now only because the PLAN contract forbids Core/ or
-        // Evidence/ from referencing a threshold that is absent from this file.
+        // 0.5. Why: RATIFIED in Block 2.1. EvidenceCameras.PlanCandidateScore sums, per affected
+        // body, an in-frustum term (0 or 1) plus a visibility term (0..1) minus a centrality
+        // penalty; the honest-verdict gate compares that sum averaged over AffectedBodyCount
+        // against this constant. 0.5 requires roughly "half a body's worth" of combined
+        // in-frustum + unoccluded coverage on average — clearly below a fully-framed, unoccluded
+        // single-body candidate (~2.0) and clearly above a mostly-occluded or out-of-frustum one,
+        // so EVIDENCE COVERAGE: LOW fires only when the best candidate is a genuinely poor shot.
         public const float DefaultMinEvidenceCoverageScore = 0.5f;
 
         // ---------------------------------------------------------------------------------
@@ -101,9 +105,10 @@ namespace BugCam.Core
         // plus baseline, which is the stated mitigation for "800-line ghost spaghetti".
         public const int DefaultGhostBodyLimit = 10;
 
-        // 128 candidates. Why: PROVISIONAL — Block 2.1 ratifies N and records it in
-        // camera-plan.json. 128 Fibonacci-sphere points put neighbouring candidates roughly
-        // 13 degrees apart, which is finer than the orthogonality constraint needs.
+        // 128 candidates. Why: RATIFIED in Block 2.1 and recorded in camera-plan.json. 128
+        // Fibonacci-sphere points put neighbouring candidates roughly 13 degrees apart, which is
+        // finer than the orthogonality constraint needs, while keeping the O(N * AffectedBodyCount
+        // * EvidenceOcclusionRays) scoring pass cheap enough to run synchronously.
         public const int DefaultEvidenceCandidateCount = 128;
 
         // 9 rays. Why: docs/PLAN.md Block 2.1 fixes fractional occlusion at AABB centre plus
@@ -114,10 +119,64 @@ namespace BugCam.Core
         // optimized only within the top 25% of candidates by score.
         public const float DefaultEvidenceTopScoreFraction = 0.25f;
 
-        // 0.25. Why: PROVISIONAL — Block 2.1 ratifies the frame-edge penalty. A quarter weight
-        // biases the winner away from the frame edge without letting centrality outrank
-        // in-frustum coverage or occlusion.
+        // 0.25. Why: RATIFIED in Block 2.1. A quarter weight biases the winner away from the
+        // frame edge without letting centrality outrank in-frustum coverage or occlusion, whose
+        // per-body terms are each in the 0..1 range.
         public const float DefaultWeightEvidenceCentrality = 0.25f;
+
+        // ---------------------------------------------------------------------------------
+        // Block 2.1 — evidence camera geometry (EvidenceCameras.cs)
+        // ---------------------------------------------------------------------------------
+
+        // 50 degrees vertical FOV. Why: wide enough to frame a multi-body event from
+        // EvidenceEventBoundsRadiusMultiplier distance without excessive wide-angle distortion;
+        // matches common third-person framing rather than a telephoto or fisheye extreme.
+        public const float DefaultEvidenceCameraVerticalFovDegrees = 50f;
+
+        // 0.05 m near clip. Why: TowerScene bodies are ~1 m cubes and candidates can sit close to
+        // the event bounds; 5 cm keeps near-plane clipping from ever discarding a body that is
+        // genuinely in view.
+        public const float DefaultEvidenceCameraNearClip = 0.05f;
+
+        // 500 m far clip. Why: far beyond any plausible TowerScene extent (49 bodies within a few
+        // metres of the origin), so the far plane never participates in the frustum test.
+        public const float DefaultEvidenceCameraFarClip = 500f;
+
+        // 1920x1080. Why: canonical single aspect ratio used only to convert viewport fractions
+        // into a pixel-space screen separation and centrality measurement, matching the 1920x1080
+        // landscape export target docs/PLAN.md Block 2.2 already commits to. Using one fixed
+        // resolution (not the Editor Game View size) keeps candidate scoring reproducible on any
+        // machine, per docs/PLAN.md Block 2.1 VERIFY.
+        public const int DefaultEvidenceRenderWidth = 1920;
+
+        public const int DefaultEvidenceRenderHeight = 1080;
+
+        // 2.5x. Why: candidate distance from the divergence-event bounds center is
+        // bounds.extents.magnitude * this multiplier. 2.5x keeps the whole event bounds sphere
+        // inside frame at DefaultEvidenceCameraVerticalFovDegrees with margin for the body extents
+        // added on top of each AABB, without pushing every candidate so far out that occlusion by
+        // nearby bodies becomes physically implausible.
+        public const float DefaultEvidenceEventBoundsRadiusMultiplier = 2.5f;
+
+        // 100 / 10 / 1. Why: docs/PLAN.md Block 2.1 ranks cameras 2-4 by "(a) orthogonality to
+        // camera 1, (b) contact proximity, (c) trajectory alignment ... in that order". Each term
+        // is normalized to roughly 0..1 per candidate; weighting them 100:10:1 makes (a) dominate
+        // the ranking outcome in every case except a near-exact tie on orthogonality, and (b)
+        // dominate over (c) the same way, approximating strict lexicographic order with a single
+        // continuous score and a strict index tie-break (never a float equality compare).
+        public const float DefaultWeightCameraOrthogonality = 100f;
+
+        public const float DefaultWeightContactProximity = 10f;
+
+        public const float DefaultWeightTrajectoryAlignment = 1f;
+
+        // 500 px. Why: PLAN's screen-space-separation score is summed in pixels across affected
+        // bodies, while the in-frustum and visibility terms are each 0..1 per body. Dividing the
+        // raw pixel sum by 500 brings a "clearly separated" candidate (roughly 250-750 px per
+        // body at DefaultEvidenceRenderWidth) into the same order of magnitude as those terms, so
+        // separation contributes to camera 1's ranking without a unit-scale mismatch drowning out
+        // in-frustum/visibility.
+        public const float DefaultScreenSpaceSeparationNormalizer = 500f;
 
         [Header("Block 1.3 — per-body gates")]
         [SerializeField]
@@ -201,6 +260,47 @@ namespace BugCam.Core
         [Tooltip("Frame-edge penalty weight in evidence candidate scoring.")]
         private float weightEvidenceCentrality = DefaultWeightEvidenceCentrality;
 
+        [Header("Block 2.1 — evidence camera geometry")]
+        [SerializeField]
+        [Tooltip("Degrees. Vertical field of view used to build each candidate's virtual camera.")]
+        private float evidenceCameraVerticalFovDegrees = DefaultEvidenceCameraVerticalFovDegrees;
+
+        [SerializeField]
+        [Tooltip("Metres. Near clip plane for candidate frustum construction.")]
+        private float evidenceCameraNearClip = DefaultEvidenceCameraNearClip;
+
+        [SerializeField]
+        [Tooltip("Metres. Far clip plane for candidate frustum construction.")]
+        private float evidenceCameraFarClip = DefaultEvidenceCameraFarClip;
+
+        [SerializeField]
+        [Tooltip("Pixels. Canonical render width used only for pixel-space scoring.")]
+        private int evidenceRenderWidth = DefaultEvidenceRenderWidth;
+
+        [SerializeField]
+        [Tooltip("Pixels. Canonical render height used only for pixel-space scoring.")]
+        private int evidenceRenderHeight = DefaultEvidenceRenderHeight;
+
+        [SerializeField]
+        [Tooltip("Candidate distance from event bounds center = bounds.extents.magnitude x this.")]
+        private float evidenceEventBoundsRadiusMultiplier = DefaultEvidenceEventBoundsRadiusMultiplier;
+
+        [SerializeField]
+        [Tooltip("Cameras 2-4 ranking weight for orthogonality to camera 1 (PLAN criterion a).")]
+        private float weightCameraOrthogonality = DefaultWeightCameraOrthogonality;
+
+        [SerializeField]
+        [Tooltip("Cameras 2-4 ranking weight for contact proximity (PLAN criterion b).")]
+        private float weightContactProximity = DefaultWeightContactProximity;
+
+        [SerializeField]
+        [Tooltip("Cameras 2-4 ranking weight for trajectory alignment (PLAN criterion c).")]
+        private float weightTrajectoryAlignment = DefaultWeightTrajectoryAlignment;
+
+        [SerializeField]
+        [Tooltip("Divisor bringing raw pixel screen-space separation into 0..1-ish scale.")]
+        private float screenSpaceSeparationNormalizer = DefaultScreenSpaceSeparationNormalizer;
+
         /// <summary>Metres. The "meaningfully affected" condition.</summary>
         public float PerBodyPositionThreshold => perBodyPositionThreshold;
 
@@ -251,6 +351,32 @@ namespace BugCam.Core
         public float EvidenceTopScoreFraction => evidenceTopScoreFraction;
 
         public float WeightEvidenceCentrality => weightEvidenceCentrality;
+
+        /// <summary>Degrees. Vertical FOV for candidate virtual cameras.</summary>
+        public float EvidenceCameraVerticalFovDegrees => evidenceCameraVerticalFovDegrees;
+
+        /// <summary>Metres. Near clip plane for candidate frustum construction.</summary>
+        public float EvidenceCameraNearClip => evidenceCameraNearClip;
+
+        /// <summary>Metres. Far clip plane for candidate frustum construction.</summary>
+        public float EvidenceCameraFarClip => evidenceCameraFarClip;
+
+        /// <summary>Pixels. Canonical render width for pixel-space scoring only.</summary>
+        public int EvidenceRenderWidth => evidenceRenderWidth;
+
+        /// <summary>Pixels. Canonical render height for pixel-space scoring only.</summary>
+        public int EvidenceRenderHeight => evidenceRenderHeight;
+
+        /// <summary>Candidate distance multiplier applied to the event bounds extents magnitude.</summary>
+        public float EvidenceEventBoundsRadiusMultiplier => evidenceEventBoundsRadiusMultiplier;
+
+        public float WeightCameraOrthogonality => weightCameraOrthogonality;
+
+        public float WeightContactProximity => weightContactProximity;
+
+        public float WeightTrajectoryAlignment => weightTrajectoryAlignment;
+
+        public float ScreenSpaceSeparationNormalizer => screenSpaceSeparationNormalizer;
 
         /// <summary>
         /// A fresh in-memory instance carrying the code defaults. Used by tests and by any

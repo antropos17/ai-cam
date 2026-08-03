@@ -55,7 +55,14 @@ Evidence (Blocks 1.5, 2.1) — same asset:
 | `EvidenceCandidateCount` | candidates | Fibonacci-sphere N; recorded in `camera-plan.json` |
 | `EvidenceOcclusionRays` = 9 | rays | AABB centre + 8 corners; fractional occlusion = hits / rays |
 | `EvidenceTopScoreFraction` = 0.25 | — | survivor filter applied before optimizing cameras 2–4 |
-| `WeightEvidenceCentrality` | — | frame-edge penalty in candidate scoring |
+| `WeightEvidenceCentrality` = 0.25 | — | frame-edge penalty in candidate scoring |
+| `EvidenceCameraVerticalFovDegrees` = 50 | degrees | vertical FOV of each candidate's virtual camera |
+| `EvidenceCameraNearClip` = 0.05 | metres | near clip plane for candidate frustum construction |
+| `EvidenceCameraFarClip` = 500 | metres | far clip plane for candidate frustum construction |
+| `EvidenceRenderWidth` / `EvidenceRenderHeight` = 1920×1080 | pixels | canonical resolution for pixel-space scoring only (matches Block 2.2 landscape export) |
+| `EvidenceEventBoundsRadiusMultiplier` = 2.5 | × bounds extents | candidate sphere distance from the divergence-event bounds center |
+| `WeightCameraOrthogonality` / `WeightContactProximity` / `WeightTrajectoryAlignment` = 100 / 10 / 1 | — | cameras 2–4 ranking weights approximating criteria (a)/(b)/(c) in priority order |
+| `ScreenSpaceSeparationNormalizer` = 500 | pixels | divisor bringing raw pixel separation onto the same 0..1-ish scale as the other terms |
 
 Rules:
 - Every default value carries a one-line comment stating **why that number**, not merely what it is.
@@ -124,6 +131,10 @@ Console output with threshold / first divergence frame / spread / amplification 
 **Constraints.** No Cinemachine, no MCP, no `com.unity.perception` (abandoned since Nov 2024). Plain `UnityEngine.Camera` plus the three APIs named above. Nothing lands in `Core/` — this lives in `Evidence/EvidenceCameras.cs`.
 
 - VERIFY: selection is reproducible bit-for-bit by a third party from the same recorded runs — re-running selection over identical recorded trajectories yields identical candidate scores, identical winner indices, and an identical `camera-plan.json`.
+
+**Reproducibility means no live scene.** "Reproducible... by a third party from the same recorded runs" means the algorithm is a pure post-process over `RunResult` + `DivergenceResult` + per-body extents — occlusion uses ray-vs-AABB math over recorded positions, never `Physics.Raycast` against live colliders, and the frustum test builds its view-projection matrix directly (`Matrix4x4`) rather than from a scene `Camera` GameObject. Bodies are treated as world-axis-aligned boxes at each queried frame (position ± half-extent from `SimulationBodyDefinition.Size`), not rotation-aware OBBs — a documented simplification. "Contact proximity" (criterion b) approximates to distance-from-event-bounds-center, since collision-pair/contact data is backlog per `CLAUDE.md` (not part of the 14-float stride) and therefore unavailable to score against.
+
+**Block 2.1 landing scope.** The first commit lands `EvidenceCameras.cs` (candidate generation, scoring, honest verdict) + `camera-plan.json` schema/writer + EditMode VERIFY — everything checkable in batchmode without a live Editor. `RetroPlayer` (scrub/slow-mo playback) and the actual 2×2 viewport/RenderTexture compositing are deferred to a follow-up commit that needs a live GPU Editor session to verify, the same standard Block 1.5's screenshot capture was held to after the `#1F1F24` blank-PNG correction. Do not claim the deferred pieces as done.
 
 ### Block 2.2 — Evidence overlay + export
 - UI Canvas overlay: test numbers, frame counter, timeline, logo.
