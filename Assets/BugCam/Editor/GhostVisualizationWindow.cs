@@ -54,16 +54,14 @@ namespace BugCam.Editor
                 _summaryText = GhostEvidenceWriter.BuildSummaryMarkdown(_document);
             }
 
-            GhostEvidencePlayModeHost.SearchCompleted += OnHostSearchCompleted;
-        }
-
-        private void OnDestroy()
-        {
+            // Idempotent subscribe — avoid double-fire after domain reload / re-enable.
             GhostEvidencePlayModeHost.SearchCompleted -= OnHostSearchCompleted;
+            GhostEvidencePlayModeHost.SearchCompleted += OnHostSearchCompleted;
         }
 
         private void OnDisable()
         {
+            GhostEvidencePlayModeHost.SearchCompleted -= OnHostSearchCompleted;
             // Session survives window close for Scene View; do not dispose here.
         }
 

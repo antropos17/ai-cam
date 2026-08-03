@@ -6,7 +6,9 @@
 - Active block: 1.5 (ghost visualization on `feat/block-1.5-ghost-visualization`)
 - Day 1 checkpoint: PASSED (Scene View fan + success-path honest reports + evidence bundle)
 - Day 2 checkpoint: NOT PASSED — Day 2 not started (no RetroPlayer, MP4, evidence cameras, camera-plan, cockpit, SceneSight)
-- PR #6 merge-blocker fix tip: `df38791d8baab95fc9d0850bae8fcf478318ae77` — Window→Host nested coroutine, canonical `runs/*.json` + visual filenames, null-gated primary metrics, `FirstDivergenceBodyId` marker
+- PR #6 prior code-fix SHA: `df38791d8baab95fc9d0850bae8fcf478318ae77` (Window→Host nested coroutine, canonical runs/*.json, null-gated primary metrics, FirstDivergenceBodyId)
+- PR #6 prior docs SHA: `d0ff85418cee9c9cd05660ca69dead1e3a632648` (STATUS tip bookkeeping only — not a code tip)
+- PR #6 leftover-fix HEAD: this leftover-fix2 commit on `feat/block-1.5-ghost-visualization` (full SHA in PR #6 body after push)
 
 ## Completed blocks
 | Block | Result | Verification | Commit |
@@ -16,7 +18,7 @@
 | 1.2 | StateRecorder + RunResult + kinematic transform replay VERIFY | See Evidence log 2026-08-02 (Block 1.2) | squash `a90765a` (#3) |
 | 1.3 | DivergenceSettings + DivergenceEngine synthetic + RunResult integration + review-fix | See Evidence log 2026-08-02 (Block 1.3 review-fix) | squash `6d676ad` (#4) |
 | 1.4 | Adaptive epsilon search (step-driven) + partial PlayMode VERIFY (fail-closed bracket/fan + ±1 growth-step Ratio≤2; VERIFY (a) OPEN) | See Evidence log 2026-08-02 (Block 1.4 verify-fix) | merge SHA `1bd10113eeeb8376ae31379b391e8c408d2884a8` (#5) |
-| 1.5 | Ghost visualization + evidence bundle (`BugCam.Evidence` + Scene View drawer + Ghost Visualization window) | See Evidence log 2026-08-03 (pr6-fix) | tip `df38791` on `feat/block-1.5-ghost-visualization` (PR #6 OPEN) |
+| 1.5 | Ghost visualization + evidence bundle (`BugCam.Evidence` + Scene View drawer + Ghost Visualization window) | See Evidence log 2026-08-03 (pr6-fix2) | branch `feat/block-1.5-ghost-visualization` (PR #6 OPEN) |
 
 ## Open findings / blockers
 - RESOLVED (Block 1.4 design): fan samples may exceed `EpsilonCeiling` up to `1.2 × EpsilonCeiling`. Magnitudes are **not** silently clamped; every fan sample above the search ceiling is marked `OutsideSearchRange=true`. Search range and characterization range are reported separately.
@@ -101,6 +103,30 @@ EditMode +1 vs prior tip (`ScreenshotCaptureFailsClosedOnBlankOrWritesDistinctPn
 | PlayMode | 21 | 21 | 0 | Passed | `Library/BugCamEvidence/Block1.5-pr6-fix/PlayMode.xml` |
 
 **Unity MCP live:** unavailable this pass (`instance_count=0`). GPU PNG regenerate / Window-button Scene View proof not re-run live; batchmode honesty + nested-coroutine / Host path contracts are green. Day 2 not started.
+
+### 2026-08-03 — Block 1.5 PR #6 leftover merge-blocker fix2 (`feat/block-1.5-ghost-visualization`)
+
+**Prior code-fix SHA:** `df38791d8baab95fc9d0850bae8fcf478318ae77`. **Prior docs SHA:** `d0ff85418cee9c9cd05660ca69dead1e3a632648`. **This leftover-fix commit / HEAD:** same as the commit that lands this entry (full SHA in PR #6 body after push). **Base main:** `1bd10113eeeb8376ae31379b391e8c408d2884a8`.
+
+**Blockers fixed:**
+1. **Busy lock:** Menu + all public starts route through `TryStartTowerSearch`; `StartTowerSearch` private; `ExitingPlayMode` calls `FinishBusy` when Busy (interrupted mid-run too); EditMode concurrent reject while busy.
+2. **BuildFailed honesty:** `GhostEvidenceReport.hasThresholdEstimate = search.HasThresholdEstimate && document.Success` (matches metrics); BuildFailed-over-bracket regression.
+3. **STATUS tip labeling:** distinguish prior code-fix SHA vs docs SHA; HEAD = this leftover-fix commit (no tip-chase of ancestors).
+4. **Host nested-coroutine soft-green:** Window→`TryStartTowerSearch` + Host `StartCoroutine` / `yield return runner.Run` source contracts (in-memory enumerator demo is footnote only).
+5. **Floor-divergent JSON honesty:** success path `DIVERGENT AT SEARCH FLOOR` → no threshold, fans retained (matches PlayMode FastStepCount=40).
+
+**Hardening:** Session `Register` gated on has-document; Window unsubscribes `SearchCompleted` in `OnDisable` (idempotent OnEnable).
+
+**VERIFIED FACT — batchmode Unity `6000.3.21f1`** (`run-checkpoint.ps1 -Suite All -EvidenceDir Library\BugCamEvidence\Block1.5-pr6-fix2`, exit 0):
+
+| Suite | total | passed | failed | result | XML |
+|---|---|---|---|---|---|
+| EditMode | 92 | 92 | 0 | Passed | `Library/BugCamEvidence/Block1.5-pr6-fix2/EditMode.xml` |
+| PlayMode | 21 | 21 | 0 | Passed | `Library/BugCamEvidence/Block1.5-pr6-fix2/PlayMode.xml` |
+
+EditMode +2 vs pr6-fix (`ConcurrentTryStartTowerSearchRejectsWhileBusy`, `BuildFailedOverBracketNullsThresholdInConsoleAndMetrics`, `FloorDivergentSuccessRetainsFansWithoutThresholdEstimate`; nested-coroutine contracts consolidated). PlayMode unchanged at 21 with FastStepCount=40 floor-divergent honesty asserts.
+
+**Unity MCP live:** unavailable (`instance_count=0`). GPU PNG / Window-button Scene View not re-run live. Day 2 not started.
 
 ### 2026-08-02 — Block 1.4 adaptive epsilon search (`feat/block-1.4-epsilon-search`)
 

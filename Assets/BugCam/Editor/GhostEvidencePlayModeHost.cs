@@ -38,12 +38,23 @@ namespace BugCam.Editor
         [MenuItem("BugCam/Run Ghost Evidence (Tower / step 32)")]
         public static void MenuRunTowerStep32()
         {
-            StartTowerSearch(32, EpsilonSearchStrategy.AscendFromStart, Vector3.right, SourceMenu);
+            if (!TryStartTowerSearch(
+                    32,
+                    EpsilonSearchStrategy.AscendFromStart,
+                    Vector3.right,
+                    SourceMenu,
+                    out var rejectReason))
+            {
+                Debug.LogWarning(rejectReason);
+            }
         }
 
         /// <summary>True when a Window or Host search is pending or running.</summary>
         public static bool IsSearchBusy => SessionState.GetBool(BusyKey, false);
 
+        /// <summary>
+        /// Sole public entry for Window / menu tower search. Rejects when Busy.
+        /// </summary>
         public static bool TryStartTowerSearch(
             int stepCount,
             EpsilonSearchStrategy strategy,
@@ -62,13 +73,12 @@ namespace BugCam.Editor
             return true;
         }
 
-        public static void StartTowerSearch(
-            int stepCount = 32,
-            EpsilonSearchStrategy strategy = EpsilonSearchStrategy.AscendFromStart,
-            Vector3? searchAxis = null,
-            string source = SourceMenu)
+        private static void StartTowerSearch(
+            int stepCount,
+            EpsilonSearchStrategy strategy,
+            Vector3 searchAxis,
+            string source)
         {
-            var axis = searchAxis ?? Vector3.right;
             SessionState.SetBool(BusyKey, true);
             SessionState.SetString(SourceKey, source ?? SourceMenu);
 
@@ -77,14 +87,14 @@ namespace BugCam.Editor
                 SessionState.SetBool(PendingKey, true);
                 SessionState.SetInt("BugCam.GhostHost.StepCount", stepCount);
                 SessionState.SetInt("BugCam.GhostHost.Strategy", (int)strategy);
-                SessionState.SetFloat("BugCam.GhostHost.AxisX", axis.x);
-                SessionState.SetFloat("BugCam.GhostHost.AxisY", axis.y);
-                SessionState.SetFloat("BugCam.GhostHost.AxisZ", axis.z);
+                SessionState.SetFloat("BugCam.GhostHost.AxisX", searchAxis.x);
+                SessionState.SetFloat("BugCam.GhostHost.AxisY", searchAxis.y);
+                SessionState.SetFloat("BugCam.GhostHost.AxisZ", searchAxis.z);
                 EditorApplication.isPlaying = true;
                 return;
             }
 
-            EnsureRunner(stepCount, strategy, axis);
+            EnsureRunner(stepCount, strategy, searchAxis);
         }
 
         private static void OnPlayModeStateChanged(PlayModeStateChange state)
@@ -95,10 +105,11 @@ namespace BugCam.Editor
             }
             else if (state == PlayModeStateChange.ExitingPlayMode)
             {
-                // Leaving play without a completed run: clear busy so Edit Mode can retry.
-                if (SessionState.GetBool(PendingKey, false))
+                // Interrupted or abandoned run: clear Busy/Pending even if PendingKey
+                // was already cleared when the runner started (mid-run exit).
+                if (IsSearchBusy)
                 {
-                    // Still pending into play — keep busy.
+                    FinishBusy();
                 }
             }
         }

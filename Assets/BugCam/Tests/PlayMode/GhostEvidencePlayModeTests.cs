@@ -140,6 +140,21 @@ namespace BugCam.Tests
 
             Assert.That(Prop<bool>(searchResult, "Succeeded"), Is.True);
 
+            // FastStepCount=40 on this tower → DIVERGENT AT SEARCH FLOOR (not VERIFY step 32).
+            // Honest success path: no threshold estimate; characterization fans retained.
+            if (verdict == "DIVERGENT AT SEARCH FLOOR")
+            {
+                Assert.That(Prop<bool>(searchResult, "HasThresholdEstimate"), Is.False);
+                Assert.That(fanCount, Is.EqualTo(15));
+                var json = (string)writerType.GetMethod("BuildMetricsJson")
+                    .Invoke(null, new object[] { document });
+                Assert.That(json, Does.Contain("\"hasThresholdEstimate\":false"));
+                Assert.That(json, Does.Contain("\"thresholdEstimateMetres\":null"));
+                Assert.That(json, Does.Contain("\"retainedFanCount\":15"));
+                Assert.That(ghostText, Does.Contain("hasThresholdEstimate=False"));
+                Assert.That(ghostText, Does.Contain("thresholdEstimateMetres=null"));
+            }
+
             yield return WaitCleanup(initialSceneCount);
             Assert.That(SceneManager.sceneCount, Is.EqualTo(initialSceneCount));
         }

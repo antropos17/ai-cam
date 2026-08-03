@@ -5,6 +5,7 @@ using System.Linq;
 using System.Reflection;
 using System.Security.Cryptography;
 using NUnit.Framework;
+using UnityEditor;
 using UnityEngine;
 
 namespace BugCam.Tests
@@ -535,16 +536,29 @@ namespace BugCam.Tests
         }
 
         [Test]
-        public void WindowRoutesSearchThroughHostAndEditorCoroutineUtilityIsGone()
+        public void WindowAndHostPinNestedCoroutineSearchContracts()
         {
             var windowType = Type.GetType("BugCam.Editor.GhostVisualizationWindow, BugCam.Editor");
             var hostType = Type.GetType("BugCam.Editor.GhostEvidencePlayModeHost, BugCam.Editor");
             Assert.That(windowType, Is.Not.Null);
             Assert.That(hostType, Is.Not.Null);
             Assert.That(
-                hostType.GetMethod("TryStartTowerSearch"),
+                hostType.GetMethod(
+                    "TryStartTowerSearch",
+                    BindingFlags.Public | BindingFlags.Static),
                 Is.Not.Null,
                 "Host must expose the single shared search entry.");
+            Assert.That(
+                hostType.GetMethod(
+                    "StartTowerSearch",
+                    BindingFlags.Public | BindingFlags.Static),
+                Is.Null,
+                "StartTowerSearch must be private; public callers use TryStartTowerSearch.");
+            Assert.That(
+                hostType.GetMethod(
+                    "StartTowerSearch",
+                    BindingFlags.NonPublic | BindingFlags.Static),
+                Is.Not.Null);
             Assert.That(
                 Type.GetType("BugCam.Editor.EditorCoroutineUtility, BugCam.Editor"),
                 Is.Null,
@@ -555,13 +569,43 @@ namespace BugCam.Tests
                     BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public),
                 Is.Null,
                 "Window must not own a nested-IEnumerator search path.");
-        }
 
-        [Test]
-        public void NestedEnumeratorPumpProvesHostSemanticsRequired()
-        {
-            // Documents the EditorCoroutineUtility bug: outer-only MoveNext never executes
-            // a yielded nested IEnumerator. Host MonoBehaviour / PlayMode yield return Current does.
+            // Source contract: Window call site + Host MonoBehaviour yield return runner.Run.
+            // In-memory enumerator demos alone are insufficient Host proof.
+            var windowCs = File.ReadAllText(
+                Path.Combine(Application.dataPath, "BugCam", "Editor", "GhostVisualizationWindow.cs"));
+            var hostCs = File.ReadAllText(
+                Path.Combine(Application.dataPath, "BugCam", "Editor", "GhostEvidencePlayModeHost.cs"));
+            Assert.That(
+                windowCs,
+                Does.Contain("GhostEvidencePlayModeHost.TryStartTowerSearch("),
+                "Window must call Host.TryStartTowerSearch.");
+            // Avoid substring false-positive on TryStartTowerSearch → StartTowerSearch.
+            Assert.That(
+                windowCs,
+                Does.Not.Contain(".StartTowerSearch("),
+                "Window must not call ungated Host.StartTowerSearch.");
+            var menuIdx = hostCs.IndexOf("MenuRunTowerStep32()", StringComparison.Ordinal);
+            Assert.That(menuIdx, Is.GreaterThanOrEqualTo(0));
+            var menuBody = hostCs.Substring(menuIdx, Math.Min(400, hostCs.Length - menuIdx));
+            Assert.That(
+                menuBody,
+                Does.Contain("TryStartTowerSearch("),
+                "MenuRunTowerStep32 must route through TryStartTowerSearch.");
+            Assert.That(
+                menuBody,
+                Does.Not.Contain("StartTowerSearch(32"),
+                "Menu must not call ungated StartTowerSearch.");
+            Assert.That(
+                hostCs,
+                Does.Contain("StartCoroutine(Run("),
+                "Host must start its search via MonoBehaviour.StartCoroutine.");
+            Assert.That(
+                hostCs,
+                Does.Contain("yield return runner.Run("),
+                "Host Run must yield return EpsilonSearchRunner.Run (Unity nested pump).");
+
+            // Semantic footnote: outer-only MoveNext skips nested IEnumerator bodies.
             var innerRanBroken = false;
             IEnumerator InnerBroken()
             {
@@ -577,36 +621,107 @@ namespace BugCam.Tests
             var outer = OuterBroken();
             Assert.That(outer.MoveNext(), Is.True);
             Assert.That(outer.Current, Is.InstanceOf<IEnumerator>());
-            // Broken editor path advances outer again without pumping Current.
             Assert.That(outer.MoveNext(), Is.False);
             Assert.That(
                 innerRanBroken,
                 Is.False,
                 "Outer-only MoveNext must leave nested body unrun (EditorCoroutineUtility bug).");
+        }
 
-            // Correct nested pump (Host / PlayMode / Unity yield return):
-            var innerRanCorrect = false;
-            IEnumerator InnerCorrect()
-            {
-                innerRanCorrect = true;
-                yield return null;
-            }
+        [Test]
+        public void ConcurrentTryStartTowerSearchRejectsWhileBusy()
+        {
+            const string busyKey = "BugCam.GhostSearch.Busy";
+            const string pendingKey = "BugCam.GhostHost.Pending";
+            SessionState.SetBool(busyKey, false);
+            SessionState.SetBool(pendingKey, false);
 
-            IEnumerator OuterCorrect()
+            var hostType = Type.GetType("BugCam.Editor.GhostEvidencePlayModeHost, BugCam.Editor");
+            Assert.That(hostType, Is.Not.Null);
+            var tryStart = hostType.GetMethod(
+                "TryStartTowerSearch",
+                BindingFlags.Public | BindingFlags.Static);
+            Assert.That(tryStart, Is.Not.Null);
+
+            SessionState.SetBool(busyKey, true);
+            try
             {
-                var nested = InnerCorrect();
-                while (nested.MoveNext())
+                var strategyType = Type.GetType("BugCam.Core.EpsilonSearchStrategy, BugCam.Core");
+                var strategy = Enum.ToObject(strategyType, 0);
+                var args = new object[]
                 {
-                    yield return nested.Current;
-                }
+                    32,
+                    strategy,
+                    Vector3.right,
+                    "test",
+                    null
+                };
+                var accepted = (bool)tryStart.Invoke(null, args);
+                Assert.That(accepted, Is.False, "Busy Host must reject concurrent TryStart.");
+                Assert.That(args[4], Is.InstanceOf<string>());
+                Assert.That((string)args[4], Does.Contain("already pending or running"));
+                Assert.That(SessionState.GetBool(busyKey, false), Is.True);
             }
-
-            var correct = OuterCorrect();
-            while (correct.MoveNext())
+            finally
             {
+                SessionState.SetBool(busyKey, false);
+                SessionState.SetBool(pendingKey, false);
             }
+        }
 
-            Assert.That(innerRanCorrect, Is.True, "Nested pump must fully execute inner IEnumerator.");
+        [Test]
+        public void BuildFailedOverBracketNullsThresholdInConsoleAndMetrics()
+        {
+            var searchResult = DriveBracketSearch();
+            Assert.That(Prop<bool>(searchResult, "Succeeded"), Is.True);
+            Assert.That(Prop<bool>(searchResult, "HasThresholdEstimate"), Is.True);
+
+            var document = CreateFailureDocument(
+                searchResult,
+                "BUILD_FAILED",
+                "forced build failure over bracket search");
+            Assert.That(Prop<bool>(document, "Success"), Is.False);
+            Assert.That(Prop<string>(document, "ErrorCode"), Is.EqualTo("BUILD_FAILED"));
+
+            var json = BuildMetricsJson(document);
+            var console = FormatHonestConsole(document);
+            Assert.That(json, Does.Contain("\"hasThresholdEstimate\":false"));
+            Assert.That(json, Does.Contain("\"thresholdEstimateMetres\":null"));
+            Assert.That(console, Does.Contain("hasThresholdEstimate=False"));
+            Assert.That(console, Does.Contain("thresholdEstimateMetres=null"));
+            Assert.That(console, Does.Not.Match("thresholdEstimateMetres=0(\r|\n|$)"));
+            Assert.That(
+                console,
+                Does.Contain("BUGCAM_BLOCK_1_5_GHOST_EVIDENCE"),
+                "GhostEvidenceReport section must agree with metrics.");
+        }
+
+        [Test]
+        public void FloorDivergentSuccessRetainsFansWithoutThresholdEstimate()
+        {
+            // Matches PlayMode FastStepCount=40 reality on this tower:
+            // DIVERGENT AT SEARCH FLOOR, no threshold, fans retained.
+            var searchResult = DriveFloorDivergentSearch();
+            Assert.That(Prop<bool>(searchResult, "Succeeded"), Is.True, Prop<string>(searchResult, "ErrorReason"));
+            Assert.That(Prop<string>(searchResult, "Verdict"), Is.EqualTo("DIVERGENT AT SEARCH FLOOR"));
+            Assert.That(Prop<bool>(searchResult, "HasThresholdEstimate"), Is.False);
+            Assert.That(Arr(searchResult, "FanRuns").Length, Is.EqualTo(15));
+
+            var document = BuildDocument(searchResult, Vector3.right);
+            Assert.That(Prop<bool>(document, "Success"), Is.True);
+            Assert.That(Arr(document, "Fans").Length, Is.EqualTo(15));
+
+            var json = BuildMetricsJson(document);
+            var console = FormatHonestConsole(document);
+            Assert.That(json, Does.Contain("\"success\":true"));
+            Assert.That(json, Does.Contain("\"verdict\":\"DIVERGENT AT SEARCH FLOOR\""));
+            Assert.That(json, Does.Contain("\"hasThresholdEstimate\":false"));
+            Assert.That(json, Does.Contain("\"thresholdEstimateMetres\":null"));
+            Assert.That(json, Does.Contain("\"retainedFanCount\":15"));
+            Assert.That(console, Does.Contain("hasThresholdEstimate=False"));
+            Assert.That(console, Does.Contain("thresholdEstimateMetres=null"));
+            Assert.That(console, Does.Contain("retainedFanCount=15"));
+            Assert.That(console, Does.Contain("verdict=DIVERGENT AT SEARCH FLOOR"));
         }
 
         [Test]
@@ -776,6 +891,41 @@ namespace BugCam.Tests
             }
         }
 
+        private static object CreateFailureDocument(
+            object searchResult,
+            string errorCode,
+            string errorReason)
+        {
+            var builderType = Type.GetType("BugCam.Evidence.GhostEvidenceBuilder, BugCam.Evidence");
+            var identityType = Type.GetType("BugCam.Evidence.GhostSearchIdentity, BugCam.Evidence");
+            var strategyType = Type.GetType("BugCam.Core.EpsilonSearchStrategy, BugCam.Core");
+            var envType = Type.GetType("BugCam.Evidence.GhostRunEnvironment, BugCam.Evidence");
+            var strategy = Enum.ToObject(strategyType, 0);
+            var identity = Activator.CreateInstance(identityType, 49, Vector3.right, strategy);
+            var environment = Activator.CreateInstance(
+                envType,
+                "test-unity",
+                "test-sha",
+                "test-branch",
+                "Assets/TestScene.unity");
+
+            return builderType.GetMethod(
+                    "CreateFailureDocument",
+                    BindingFlags.Public | BindingFlags.Static)
+                .Invoke(
+                    null,
+                    new object[]
+                    {
+                        searchResult,
+                        identity,
+                        errorCode,
+                        errorReason,
+                        10,
+                        "build-failed-run",
+                        environment
+                    });
+        }
+
         private static void AssertPrimaryUnavailable(string json)
         {
             Assert.That(json, Does.Contain("\"maxSpreadMetres\":null"));
@@ -848,6 +998,21 @@ namespace BugCam.Tests
                 // Only the search ceiling diverges → reference ≈ ceiling so 1.2× exceeds it.
                 var diverged = epsilon >= 1e-2f - 1e-12f;
                 return NeedsFrames(phase) ? Framed(diverged, epsilon, axis) : Compact(diverged);
+            });
+        }
+
+        private static object DriveFloorDivergentSearch()
+        {
+            var search = CreateSearch();
+            return Drive(search, (phase, epsilon, axis, isBaseline) =>
+            {
+                if (isBaseline)
+                {
+                    return BaselineOutcome();
+                }
+
+                // Every perturbed sample diverges — no stable lower bound / no threshold.
+                return NeedsFrames(phase) ? Framed(true, epsilon, axis) : Compact(true);
             });
         }
 

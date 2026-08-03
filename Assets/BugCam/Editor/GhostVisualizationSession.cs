@@ -96,8 +96,10 @@ namespace BugCam.Editor
 
         public void Register()
         {
-            if (_disposed || _registered)
+            if (_disposed || _registered || _document == null)
             {
+                // Gate on has-document so Clear/Ensure across play transitions
+                // do not leave an empty duringSceneGui callback registered.
                 return;
             }
 

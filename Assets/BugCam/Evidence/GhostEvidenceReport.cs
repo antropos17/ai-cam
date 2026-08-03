@@ -45,8 +45,10 @@ namespace BugCam.Evidence
             sb.AppendLine("hasPrimaryFan=" + document.HasPrimaryFan);
             sb.AppendLine("primaryFanIndex=" + document.PrimaryFanIndex);
 
-            sb.AppendLine("hasThresholdEstimate=" + search.HasThresholdEstimate);
-            if (search.HasThresholdEstimate && document.Success)
+            // Match metrics.json: never claim a threshold on BUILD_FAILED / !Success.
+            var hasThresholdEstimate = search.HasThresholdEstimate && document.Success;
+            sb.AppendLine("hasThresholdEstimate=" + hasThresholdEstimate);
+            if (hasThresholdEstimate)
             {
                 sb.AppendLine(
                     "thresholdEstimateMetres=" + Invariant(search.ThresholdEstimateMetres));
