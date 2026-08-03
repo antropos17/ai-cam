@@ -2,6 +2,7 @@
 using System;
 using System.Globalization;
 using System.IO;
+using System.Text;
 using BugCam.Core;
 using BugCam.Evidence;
 using UnityEditor;
@@ -10,26 +11,169 @@ using UnityEngine;
 namespace BugCam.Editor
 {
     /// <summary>
-    /// Block 1.5 Ghost Visualization Editor window.
-    /// Menu: BugCam/Ghost Visualization. Not the PR4 inspection window; not Day-2 BugCamWindow.
-    /// Search always routes through <see cref="GhostEvidencePlayModeHost"/> (MonoBehaviour nested
-    /// coroutines). Does not use EditorApplication.update wrappers that skip nested IEnumerators.
+    /// Block 2.2 Ghost Visualization window (UX pass over the Block 1.5 window).
+    /// Menu: BugCam/Ghost Visualization. Search always routes through
+    /// <see cref="GhostEvidencePlayModeHost"/> (MonoBehaviour nested coroutines).
+    ///
+    /// The UI is driven by one state machine — the single source of truth:
+    /// IDLE (transient blockers only) → READY → SEARCHING → DONE(verdict | interrupted).
+    /// Every control's visibility/enabled state derives from it; a disabled main button
+    /// always renders its reasons as explicit rows.
+    ///
+    /// Honesty rules: verdicts verbatim from the engine; undefined numbers render no row
+    /// (no "unavailable" placeholders); INTERRUPTED is neutral; progress shows only real
+    /// probe steps. Performance: progress strings are rebuilt only on host events
+    /// (StringBuilder, cached GUIContent) and the window repaints only on events,
+    /// never per editor tick.
     /// </summary>
     public sealed class GhostVisualizationWindow : EditorWindow
     {
         private const int DefaultRunStepCount = 32;
+        private const string TutorialHiddenKey = "BugCam.GhostWindow.TutorialHidden";
+        private const string SetupCollapsedKey = "BugCam.GhostWindow.SetupCollapsed";
 
-        private Vector2 _scroll;
-        private string _status = "Idle.";
-        private string _summaryText = string.Empty;
-        private string _metricsPath = string.Empty;
-        private string _evidenceDir = string.Empty;
-        private bool _showBaseline = true;
-        private bool _showFans = true;
-        private EpsilonSearchStrategy _strategy = EpsilonSearchStrategy.AscendFromStart;
-        private Vector3 _searchAxis = Vector3.right;
-        private int _stepCount = DefaultRunStepCount;
-        private GhostEvidenceDocument _document;
+        private enum WindowState
+        {
+            Idle,
+            Ready,
+            Searching,
+            Done
+        }
+
+        private readonly struct ResultRow
+        {
+            public ResultRow(string label, string value)
+            {
+                Label = label;
+                Value = value;
+            }
+
+            public readonly string Label;
+            public readonly string Value;
+        }
+
+        // --- Static UI text (cached once; no per-frame GUIContent construction) ---
+
+        private static readonly GUIContent StatusContent = new GUIContent();
+        private static readonly GUIContent HelpButtonContent =
+            new GUIContent("?", "Показать вводные 3 шага снова.");
+        private static readonly GUIContent RunButtonContent = new GUIContent("Запустить поиск");
+        private static readonly GUIContent InterruptContent = new GUIContent("Прервать");
+        private static readonly GUIContent InterruptingContent = new GUIContent("Прерывание…");
+        private static readonly GUIContent TargetLabel =
+            new GUIContent("Цель", "Открытая сцена не используется.");
+        private static readonly GUIContent TargetValue =
+            new GUIContent("процедурная TowerScene (создаётся BugCam) — снаряд, body 49");
+        private static readonly GUIContent AxisLabel = new GUIContent(
+            "Ось",
+            "Единичный вектор. Направление начального смещения снаряда при возмущении.");
+        private static readonly GUIContent StrategyLabel = new GUIContent(
+            "Стратегия",
+            "Порядок проб по диапазону: AscendFromStart — вверх от нижней границы; " +
+            "AscendFromCustomStart — вверх от заданного старта; DescendFromCeiling — " +
+            "вниз от потолка. Диапазон не меняет.");
+        private static readonly GUIContent RangeLabel = new GUIContent(
+            "Диапазон ε",
+            "Метры. Пределы поиска возмущения: floor … ceiling из DivergenceSettings.");
+        private static readonly GUIContent RangeValueContent = new GUIContent();
+        private static readonly GUIContent[] AxisOptions =
+        {
+            new GUIContent("X"),
+            new GUIContent("Y"),
+            new GUIContent("Z")
+        };
+        private static readonly Vector3[] AxisVectors =
+        {
+            Vector3.right,
+            Vector3.up,
+            Vector3.forward
+        };
+
+        private const string ReasonSearching = "Причина: идёт поиск";
+        private const string ReasonCompiling = "Причина: идёт компиляция скриптов";
+        private const string ReasonPlayTransition = "Причина: редактор переключает Play Mode";
+        private const string ReasonForeignLock =
+            "Причина: пайплайн поиска занят (Busy/Pending-лок хоста — запуск из меню BugCam " +
+            "или незавершённый прогон)";
+        private const string ReasonForeignPlayMode =
+            "Причина: Play Mode запущен вручную, не BugCam — остановите его перед поиском";
+        private const string ReasonEvidenceNotWritten =
+            "Причина: улики этого прогона не записаны";
+        private const string ReasonEvidenceWriteFailed =
+            "Причина: папка улик не записана (ошибка выше)";
+        private const string ReasonEvidenceDirMissing = "Причина: папка не найдена";
+        private const string ReasonNoFans = "Причина: фанов нет — нечего показывать";
+
+        private const string StatusIdle = "Запуск недоступен — см. причину под кнопкой";
+        private const string StatusEnteringPlayMode = "Поиск: входим в Play Mode…";
+        private const string StatusInterrupting = "Прерывание — выход из Play Mode…";
+        private const string InterruptedExplanation =
+            "Поиск прерван до завершения — чисел нет. Не ошибка и не вердикт.";
+
+        // Phase strip variants indexed by EpsilonSearchPhase (real engine phase names).
+        private static readonly string[] PhaseStripByPhase =
+        {
+            "Baseline > Ladder > Exponential > Bisection > Fan",              // NotStarted
+            "[Baseline] > Ladder > Exponential > Bisection > Fan",            // Baseline
+            "Baseline > [Ladder] > Exponential > Bisection > Fan",            // Ladder
+            "Baseline > Ladder > [Exponential] > Bisection > Fan",            // Exponential
+            "Baseline > Ladder > Exponential > [Bisection] > Fan",            // Bisection
+            "Baseline > Ladder > Exponential > Bisection > [Fan]",            // Fan
+            "Baseline > Ladder > Exponential > Bisection > Fan",              // Completed
+            "Baseline > Ladder > Exponential > Bisection > Fan"               // Failed
+        };
+
+        private static readonly string[] PhaseNameByPhase =
+        {
+            "NotStarted", "Baseline", "Ladder", "Exponential", "Bisection", "Fan",
+            "Completed", "Failed"
+        };
+
+        private static GUIStyle _verdictStyle;
+        private static GUIStyle _wrapLabelStyle;
+        private static GUIStyle _reasonStyle;
+
+        // --- Serialized state (survives domain reload) ---
+
+        [SerializeField] private int _axisIndex;
+        [SerializeField] private EpsilonSearchStrategy _strategy = EpsilonSearchStrategy.AscendFromStart;
+        [SerializeField] private int _stepCount = DefaultRunStepCount;
+        [SerializeField] private string _evidenceDir = string.Empty;
+        [SerializeField] private bool _showBaseline = true;
+        [SerializeField] private bool _showFans = true;
+        [SerializeField] private bool _startedFromThisWindow;
+        [SerializeField] private Vector2 _scroll;
+
+        // --- Volatile state (dies with domain reload — stale numbers must not survive) ---
+
+        [NonSerialized] private GhostEvidenceDocument _document;
+        [NonSerialized] private bool _hasCompletion;
+        [NonSerialized] private bool _writeSucceeded;
+        [NonSerialized] private string _completionStatus = string.Empty;
+        [NonSerialized] private bool _interrupting;
+        [NonSerialized] private ResultRow[] _resultRows = Array.Empty<ResultRow>();
+        [NonSerialized] private string _verdictText = string.Empty;
+        [NonSerialized] private string _verdictMeaning = string.Empty;
+
+        // Progress lines are rebuilt only inside OnHostSearchProgress.
+        [NonSerialized] private bool _hasProgress;
+        [NonSerialized] private string _progressStatusLine = StatusEnteringPlayMode;
+        [NonSerialized] private string _progressStepLine = string.Empty;
+        [NonSerialized] private string _progressEpsilonLine = string.Empty;
+        [NonSerialized] private int _progressPhaseIndex;
+
+        private readonly StringBuilder _sb = new StringBuilder(160);
+
+        private bool _tutorialHidden;
+        private bool _setupExpanded = true;
+        private bool _evidenceDirExists;
+        private string _readyStatus = string.Empty;
+        private string _setupSummary = string.Empty;
+        private string _rangeText = string.Empty;
+        private string _priorRunLabel = string.Empty;
+        private GUIContent _stepsLabel;
+        private float _epsFloorMetres;
+        private float _epsCeilingMetres;
 
         [MenuItem("BugCam/Ghost Visualization")]
         public static void Open()
@@ -43,65 +187,386 @@ namespace BugCam.Editor
 
         private void OnEnable()
         {
+            _tutorialHidden = EditorPrefs.GetBool(TutorialHiddenKey, false);
+            _setupExpanded = !EditorPrefs.GetBool(SetupCollapsedKey, false);
+
+            CacheSearchRange();
+            _readyStatus = "Готово к поиску: " +
+                BugCam.Core.TowerProbeRequestFactory.ExpectedBodyCount.ToString(CultureInfo.InvariantCulture) +
+                " тел";
+            RebuildStepsTooltip();
+            RebuildSetupSummary();
+            RefreshEvidenceDirState();
+
             var session = GhostVisualizationSession.Ensure();
             session.ShowBaseline = _showBaseline;
             session.ShowFans = _showFans;
             if (session.Document != null)
             {
+                // Live document survived (no domain reload) — restore the result block.
                 _document = session.Document;
                 _evidenceDir = session.EvidenceDirectory;
-                _metricsPath = session.MetricsPath;
-                _summaryText = GhostEvidenceWriter.BuildSummaryMarkdown(_document);
+                _hasCompletion = true;
+                _writeSucceeded = !string.IsNullOrEmpty(session.EvidenceDirectory);
+                _completionStatus = _document.SearchResult.Verdict;
+                BuildResultPresentation(_document);
+                RefreshEvidenceDirState();
             }
 
             // Idempotent subscribe — avoid double-fire after domain reload / re-enable.
             GhostEvidencePlayModeHost.SearchCompleted -= OnHostSearchCompleted;
             GhostEvidencePlayModeHost.SearchCompleted += OnHostSearchCompleted;
+            GhostEvidencePlayModeHost.SearchProgress -= OnHostSearchProgress;
+            GhostEvidencePlayModeHost.SearchProgress += OnHostSearchProgress;
+            EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
+            UnityEditor.Compilation.CompilationPipeline.compilationStarted += OnCompilationEvent;
+            UnityEditor.Compilation.CompilationPipeline.compilationFinished += OnCompilationEvent;
         }
 
         private void OnDisable()
         {
             GhostEvidencePlayModeHost.SearchCompleted -= OnHostSearchCompleted;
+            GhostEvidencePlayModeHost.SearchProgress -= OnHostSearchProgress;
+            EditorApplication.playModeStateChanged -= OnPlayModeStateChanged;
+            UnityEditor.Compilation.CompilationPipeline.compilationStarted -= OnCompilationEvent;
+            UnityEditor.Compilation.CompilationPipeline.compilationFinished -= OnCompilationEvent;
             // Session survives window close for Scene View; do not dispose here.
         }
 
+        // --- State machine (single source of truth) ---
+
+        private WindowState ResolveState()
+        {
+            if (GhostEvidencePlayModeHost.IsSearchBusy && _startedFromThisWindow)
+            {
+                return WindowState.Searching;
+            }
+
+            if (IsCompiling() || IsPlayModeTransition() || IsForeignSearchLock() ||
+                IsForeignPlayMode())
+            {
+                return WindowState.Idle;
+            }
+
+            return _hasCompletion ? WindowState.Done : WindowState.Ready;
+        }
+
+        private static bool IsCompiling()
+        {
+            return EditorApplication.isCompiling;
+        }
+
+        private static bool IsPlayModeTransition()
+        {
+            return EditorApplication.isPlayingOrWillChangePlaymode != EditorApplication.isPlaying;
+        }
+
+        private bool IsForeignSearchLock()
+        {
+            return GhostEvidencePlayModeHost.IsSearchBusy && !_startedFromThisWindow;
+        }
+
+        private bool IsForeignPlayMode()
+        {
+            return EditorApplication.isPlaying && !GhostEvidencePlayModeHost.IsSearchBusy;
+        }
+
+        // --- GUI ---
+
         private void OnGUI()
         {
+            EnsureStyles();
+            var state = ResolveState();
+
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
 
-            EditorGUILayout.LabelField("BugCam — Ghost Visualization (Block 1.5)", EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox(
-                "Runs adaptive epsilon search on TowerScene via GhostEvidencePlayModeHost " +
-                "(MonoBehaviour nested coroutines), builds ghost evidence, " +
-                "draws Scene View trajectories (Handles.DrawAAPolyLine), and writes " +
-                "Library/BugCamEvidence/Runs/<run-id>/ + Block1.5 checkpoint pointer.",
-                MessageType.Info);
+            DrawStatusLine(state);
 
-            DrawLabelLegend();
-
-            var busy = GhostEvidencePlayModeHost.IsSearchBusy;
-            EditorGUI.BeginDisabledGroup(busy);
-            _searchAxis = EditorGUILayout.Vector3Field("Search Axis", _searchAxis);
-            _strategy = (EpsilonSearchStrategy)EditorGUILayout.EnumPopup("Strategy", _strategy);
-            _stepCount = EditorGUILayout.IntField("Step Count", _stepCount);
-            if (_stepCount <= 0)
+            if (!_tutorialHidden && state != WindowState.Searching)
             {
-                _stepCount = DefaultRunStepCount;
+                DrawTutorial();
             }
 
-            if (GUILayout.Button("Run / Load Ghost Search", GUILayout.Height(28f)))
+            DrawSetup(state);
+            DrawMainButton(state);
+
+            if (state == WindowState.Searching)
             {
-                StartSearch();
+                DrawProgress();
+            }
+            else if (_hasCompletion)
+            {
+                DrawResult();
+            }
+            else if (!string.IsNullOrEmpty(_evidenceDir))
+            {
+                DrawPriorRunRow();
             }
 
-            EditorGUI.EndDisabledGroup();
+            EditorGUILayout.EndScrollView();
+        }
 
-            EditorGUILayout.Space(8f);
-            EditorGUILayout.LabelField("Visualization", EditorStyles.boldLabel);
+        private void DrawStatusLine(WindowState state)
+        {
+            string status;
+            switch (state)
+            {
+                case WindowState.Searching:
+                    status = _interrupting
+                        ? StatusInterrupting
+                        : (_hasProgress ? _progressStatusLine : StatusEnteringPlayMode);
+                    break;
+                case WindowState.Idle:
+                    status = StatusIdle;
+                    break;
+                case WindowState.Done:
+                    status = _document != null ? _verdictText : _completionStatus;
+                    break;
+                default:
+                    status = _readyStatus;
+                    break;
+            }
+
+            EditorGUILayout.BeginHorizontal();
+            StatusContent.text = status;
+            EditorGUILayout.LabelField(StatusContent, EditorStyles.boldLabel);
+            if (GUILayout.Button(HelpButtonContent, GUILayout.Width(24f)))
+            {
+                _tutorialHidden = false;
+                EditorPrefs.SetBool(TutorialHiddenKey, false);
+            }
+
+            EditorGUILayout.EndHorizontal();
+            EditorGUILayout.Space(2f);
+        }
+
+        private void DrawTutorial()
+        {
+            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField(
+                "3 шага: настрой параметры → запусти → смотри улики",
+                EditorStyles.boldLabel);
+            if (GUILayout.Button("скрыть", GUILayout.Width(60f)))
+            {
+                _tutorialHidden = true;
+                EditorPrefs.SetBool(TutorialHiddenKey, true);
+            }
+
+            EditorGUILayout.EndHorizontal();
+            EditorGUILayout.LabelField("1. Параметры — блок «Настройка» ниже");
+            EditorGUILayout.LabelField("2. «Запустить поиск» — окно само войдёт в Play Mode");
+            EditorGUILayout.LabelField("3. После вердикта — «Открыть папку улик»");
+            EditorGUILayout.EndVertical();
+            EditorGUILayout.Space(2f);
+        }
+
+        private void DrawSetup(WindowState state)
+        {
+            var searching = state == WindowState.Searching;
+            var expanded = _setupExpanded && !searching;
+
+            var newExpanded = EditorGUILayout.Foldout(expanded, _setupSummary, true);
+            if (!searching && newExpanded != _setupExpanded)
+            {
+                _setupExpanded = newExpanded;
+                EditorPrefs.SetBool(SetupCollapsedKey, !newExpanded);
+            }
+
+            if (!expanded)
+            {
+                return;
+            }
+
+            using (new EditorGUI.DisabledScope(state == WindowState.Idle))
+            {
+                EditorGUI.indentLevel++;
+                EditorGUILayout.LabelField(TargetLabel, TargetValue);
+
+                EditorGUI.BeginChangeCheck();
+                _axisIndex = EditorGUILayout.Popup(AxisLabel, _axisIndex, AxisOptions);
+                _strategy = (EpsilonSearchStrategy)EditorGUILayout.EnumPopup(StrategyLabel, _strategy);
+                _stepCount = EditorGUILayout.IntField(_stepsLabel, _stepCount);
+                if (_stepCount <= 0)
+                {
+                    _stepCount = DefaultRunStepCount;
+                }
+
+                if (EditorGUI.EndChangeCheck())
+                {
+                    RebuildStepsTooltip();
+                    RebuildSetupSummary();
+                }
+
+                RangeValueContent.text = _rangeText;
+                EditorGUILayout.LabelField(RangeLabel, RangeValueContent);
+                EditorGUI.indentLevel--;
+            }
+
+            EditorGUILayout.Space(2f);
+        }
+
+        private void DrawMainButton(WindowState state)
+        {
+            var runnable = state == WindowState.Ready || state == WindowState.Done;
+            using (new EditorGUI.DisabledScope(!runnable))
+            {
+                if (GUILayout.Button(RunButtonContent, GUILayout.Height(32f)))
+                {
+                    StartSearch();
+                }
+            }
+
+            if (state == WindowState.Searching)
+            {
+                EditorGUILayout.LabelField(ReasonSearching, _reasonStyle);
+            }
+            else if (state == WindowState.Idle)
+            {
+                // Exhaustive transient blockers, one row each; several can be active at once.
+                if (IsCompiling())
+                {
+                    EditorGUILayout.LabelField(ReasonCompiling, _reasonStyle);
+                }
+
+                if (IsPlayModeTransition())
+                {
+                    EditorGUILayout.LabelField(ReasonPlayTransition, _reasonStyle);
+                }
+
+                if (IsForeignSearchLock())
+                {
+                    EditorGUILayout.LabelField(ReasonForeignLock, _reasonStyle);
+                }
+
+                if (IsForeignPlayMode())
+                {
+                    EditorGUILayout.LabelField(ReasonForeignPlayMode, _reasonStyle);
+                }
+            }
+
+            EditorGUILayout.Space(4f);
+        }
+
+        private void DrawProgress()
+        {
+            EditorGUILayout.LabelField("Прогресс", EditorStyles.boldLabel);
+            EditorGUI.indentLevel++;
+            EditorGUILayout.LabelField(PhaseStripByPhase[_progressPhaseIndex]);
+            if (_hasProgress)
+            {
+                EditorGUILayout.LabelField(_progressStepLine);
+                if (!string.IsNullOrEmpty(_progressEpsilonLine))
+                {
+                    EditorGUILayout.LabelField(_progressEpsilonLine);
+                }
+            }
+
+            EditorGUI.indentLevel--;
+            EditorGUILayout.Space(4f);
+
+            using (new EditorGUI.DisabledScope(_interrupting))
+            {
+                if (GUILayout.Button(
+                        _interrupting ? InterruptingContent : InterruptContent,
+                        GUILayout.Width(120f)))
+                {
+                    _interrupting = true;
+                    // Host cleanup on ExitingPlayMode owns the completion notification —
+                    // the verdict line stays verbatim from the host, never synthesized here.
+                    EditorApplication.isPlaying = false;
+                    Repaint();
+                }
+            }
+        }
+
+        private void DrawResult()
+        {
+            EditorGUILayout.Space(4f);
+            EditorGUILayout.LabelField("Результат", EditorStyles.boldLabel);
+
+            if (_document == null)
+            {
+                // Interrupted: neutral — no invented verdict, no numbers.
+                EditorGUILayout.LabelField(_completionStatus, _wrapLabelStyle);
+                EditorGUILayout.LabelField(InterruptedExplanation, _wrapLabelStyle);
+                EditorGUILayout.Space(4f);
+                using (new EditorGUI.DisabledScope(true))
+                {
+                    GUILayout.Button("Открыть папку улик");
+                }
+
+                EditorGUILayout.LabelField(ReasonEvidenceNotWritten, _reasonStyle);
+                return;
+            }
+
+            EditorGUILayout.LabelField(_verdictText, _verdictStyle);
+            if (!string.IsNullOrEmpty(_verdictMeaning))
+            {
+                EditorGUILayout.LabelField(_verdictMeaning, _wrapLabelStyle);
+            }
+
+            EditorGUILayout.Space(4f);
+            for (var i = 0; i < _resultRows.Length; i++)
+            {
+                EditorGUILayout.LabelField(_resultRows[i].Label, _resultRows[i].Value);
+            }
+
+            if (!_writeSucceeded)
+            {
+                EditorGUILayout.Space(2f);
+                EditorGUILayout.HelpBox(_completionStatus, MessageType.Error);
+            }
+
+            EditorGUILayout.Space(4f);
+            EditorGUILayout.BeginHorizontal();
+
+            var canOpenFolder = _writeSucceeded && _evidenceDirExists;
+            using (new EditorGUI.DisabledScope(!canOpenFolder))
+            {
+                if (GUILayout.Button("Открыть папку улик"))
+                {
+                    OpenEvidenceFolder();
+                }
+            }
+
+            var hasFans = _document.Fans != null && _document.Fans.Length > 0;
+            using (new EditorGUI.DisabledScope(!hasFans))
+            {
+                if (GUILayout.Button("Показать в Scene View"))
+                {
+                    ShowInSceneView();
+                }
+            }
+
+            EditorGUILayout.EndHorizontal();
+
+            if (!canOpenFolder)
+            {
+                EditorGUILayout.LabelField(
+                    !_writeSucceeded ? ReasonEvidenceWriteFailed : ReasonEvidenceDirMissing,
+                    _reasonStyle);
+            }
+
+            if (!hasFans)
+            {
+                EditorGUILayout.LabelField(ReasonNoFans, _reasonStyle);
+            }
+            else
+            {
+                DrawSceneViewControls();
+            }
+        }
+
+        private void DrawSceneViewControls()
+        {
+            EditorGUILayout.Space(2f);
+            EditorGUILayout.LabelField("Scene View", EditorStyles.boldLabel);
+            EditorGUI.indentLevel++;
 
             EditorGUI.BeginChangeCheck();
-            _showBaseline = EditorGUILayout.Toggle("Show Baseline (white)", _showBaseline);
-            _showFans = EditorGUILayout.Toggle("Show Fans (colored)", _showFans);
+            _showBaseline = EditorGUILayout.Toggle("Baseline (белый)", _showBaseline);
+            _showFans = EditorGUILayout.Toggle("Fans (цветные)", _showFans);
             if (EditorGUI.EndChangeCheck())
             {
                 var session = GhostVisualizationSession.Ensure();
@@ -112,307 +577,421 @@ namespace BugCam.Editor
             }
 
             EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button("Show Viz"))
+            if (GUILayout.Button("К первому расхождению"))
             {
-                GhostVisualizationSession.Ensure().IsVisible = true;
-                SceneView.RepaintAll();
+                GhostVisualizationSession.Ensure().FrameFirstDivergence();
             }
 
-            if (GUILayout.Button("Hide Viz"))
+            if (GUILayout.Button("К макс. разбросу"))
+            {
+                GhostVisualizationSession.Ensure().FrameMaxSpread();
+            }
+
+            if (GUILayout.Button("Скрыть"))
             {
                 GhostVisualizationSession.Ensure().IsVisible = false;
                 SceneView.RepaintAll();
             }
 
-            if (GUILayout.Button("Clear Viz"))
-            {
-                GhostVisualizationSession.Ensure().Clear();
-                _document = null;
-                _summaryText = string.Empty;
-                SceneView.RepaintAll();
-            }
-
             EditorGUILayout.EndHorizontal();
-
-            EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button("Frame First Divergence"))
-            {
-                GhostVisualizationSession.Ensure().FrameFirstDivergence();
-            }
-
-            if (GUILayout.Button("Frame Max Spread"))
-            {
-                GhostVisualizationSession.Ensure().FrameMaxSpread();
-            }
-
-            EditorGUILayout.EndHorizontal();
-
-            EditorGUILayout.Space(8f);
-            EditorGUILayout.LabelField("Evidence", EditorStyles.boldLabel);
-
-            EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button("Open Evidence Folder"))
-            {
-                OpenEvidenceFolder();
-            }
-
-            if (GUILayout.Button("Copy Summary"))
-            {
-                EditorGUIUtility.systemCopyBuffer = _summaryText ?? string.Empty;
-                _status = "Summary copied.";
-            }
-
-            if (GUILayout.Button("Copy Metrics Path"))
-            {
-                EditorGUIUtility.systemCopyBuffer = _metricsPath ?? string.Empty;
-                _status = "Metrics path copied.";
-            }
-
-            EditorGUILayout.EndHorizontal();
-
-            if (GUILayout.Button("Regenerate Screenshots"))
-            {
-                RegenerateScreenshots();
-            }
-
-            EditorGUILayout.Space(8f);
-            EditorGUILayout.LabelField("Status", EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox(
-                busy ? "Running epsilon search via Host MonoBehaviour…" : _status,
-                MessageType.None);
-
-            if (!string.IsNullOrEmpty(_metricsPath))
-            {
-                EditorGUILayout.LabelField("Metrics", _metricsPath);
-            }
-
-            if (!string.IsNullOrEmpty(_evidenceDir))
-            {
-                EditorGUILayout.LabelField("Evidence dir", _evidenceDir);
-            }
-
-            if (_document != null)
-            {
-                DrawMetricsPanel(_document);
-            }
-
-            if (!string.IsNullOrEmpty(_summaryText))
-            {
-                EditorGUILayout.Space(4f);
-                EditorGUILayout.LabelField("Summary", EditorStyles.boldLabel);
-                EditorGUILayout.TextArea(_summaryText, GUILayout.MinHeight(180f));
-            }
-
-            EditorGUILayout.EndScrollView();
+            EditorGUI.indentLevel--;
         }
 
-        private static void DrawLabelLegend()
+        private void DrawPriorRunRow()
         {
-            EditorGUILayout.LabelField("Honest labels", EditorStyles.boldLabel);
-            EditorGUILayout.LabelField("• Threshold Estimate — only when hasThresholdEstimate");
-            EditorGUILayout.LabelField("• Reference Epsilon — fan center; never exact threshold");
-            EditorGUILayout.LabelField("• Search Floor — search range lower bound");
-            EditorGUILayout.LabelField("• Search Range — EpsilonStart…EpsilonCeiling");
-            EditorGUILayout.LabelField("• Characterization Range — may exceed ceiling (OutsideSearchRange)");
-        }
-
-        private static void DrawMetricsPanel(GhostEvidenceDocument document)
-        {
-            var search = document.SearchResult;
-            var primary = document.PrimaryDivergence;
-            var primaryAvailable = GhostEvidenceWriter.HasPrimaryDivergenceMetrics(document);
+            // Domain reload killed the document: no stale numbers — only the saved path.
             EditorGUILayout.Space(4f);
-            EditorGUILayout.LabelField("Metric panel", EditorStyles.boldLabel);
-            EditorGUILayout.LabelField("Verdict", search.Verdict);
-            EditorGUILayout.LabelField(
-                "Search identity",
-                "body " + document.SearchIdentity.TargetBodyId +
-                " / " + AxisName(document.SearchIdentity.SearchAxis) +
-                " / " + document.SearchIdentity.Strategy);
-
-            if (document.Success && search.Succeeded)
+            EditorGUILayout.LabelField(_priorRunLabel);
+            using (new EditorGUI.DisabledScope(!_evidenceDirExists))
             {
-                EditorGUILayout.LabelField(
-                    "Search Floor",
-                    FormatMetres(search.SearchRangeStartMetres));
-                EditorGUILayout.LabelField(
-                    "Search Range",
-                    FormatMetres(search.SearchRangeStartMetres) + " … " +
-                    FormatMetres(search.SearchRangeCeilingMetres));
-                EditorGUILayout.LabelField(
-                    "Characterization Ceiling",
-                    FormatMetres(search.CharacterizationCeilingMetres));
-            }
-            else
-            {
-                EditorGUILayout.LabelField("Search Floor", "unavailable");
-                EditorGUILayout.LabelField("Search Range", "unavailable");
-                EditorGUILayout.LabelField("Characterization Ceiling", "unavailable");
+                if (GUILayout.Button("Открыть папку улик", GUILayout.Width(180f)))
+                {
+                    OpenEvidenceFolder();
+                }
             }
 
-            if (search.HasThresholdEstimate && document.Success)
+            if (!_evidenceDirExists)
             {
-                EditorGUILayout.LabelField(
-                    "Threshold Estimate",
-                    FormatMetres(search.ThresholdEstimateMetres));
+                EditorGUILayout.LabelField(ReasonEvidenceDirMissing, _reasonStyle);
             }
-            else
-            {
-                EditorGUILayout.LabelField("Threshold Estimate", "unavailable");
-            }
-
-            if (GhostEvidenceWriter.HasReferenceEpsilon(search) && document.Success)
-            {
-                EditorGUILayout.LabelField(
-                    "Reference Epsilon",
-                    FormatMetres(search.ReferenceEpsilonMetres) +
-                    " (exact=" + search.ReferenceIsExactThreshold + ")");
-            }
-            else
-            {
-                EditorGUILayout.LabelField("Reference Epsilon", "unavailable");
-            }
-
-            EditorGUILayout.LabelField("Retained fans", document.Fans.Length.ToString());
-            EditorGUILayout.LabelField("Ranked ghost bodies", document.RankedBodies.Length.ToString());
-
-            if (primaryAvailable)
-            {
-                EditorGUILayout.LabelField(
-                    "First divergence frame",
-                    primary.FirstDivergenceFrame.ToString(CultureInfo.InvariantCulture));
-                EditorGUILayout.LabelField(
-                    "First divergence body",
-                    primary.FirstDivergenceBodyId.ToString(CultureInfo.InvariantCulture));
-                EditorGUILayout.LabelField("Max spread", FormatMetres(primary.MaxSpreadMetres));
-                EditorGUILayout.LabelField(
-                    "Max spread body",
-                    primary.MaxSpreadBodyId.ToString(CultureInfo.InvariantCulture));
-            }
-            else
-            {
-                EditorGUILayout.LabelField("First divergence frame", "unavailable");
-                EditorGUILayout.LabelField("First divergence body", "unavailable");
-                EditorGUILayout.LabelField("Max spread", "unavailable");
-                EditorGUILayout.LabelField("Max spread body", "unavailable");
-            }
-
-            EditorGUILayout.LabelField(
-                "Amplification",
-                primaryAvailable && primary.AmplificationDefined
-                    ? primary.Amplification.ToString("R", CultureInfo.InvariantCulture)
-                    : "unavailable");
         }
+
+        // --- Actions ---
 
         private void StartSearch()
         {
             if (!GhostEvidencePlayModeHost.TryStartTowerSearch(
                     _stepCount,
                     _strategy,
-                    NormalizeAxis(_searchAxis),
+                    AxisVectors[_axisIndex],
                     GhostEvidencePlayModeHost.SourceWindow,
                     out var rejectReason))
             {
-                _status = rejectReason;
+                // Race with a menu-started search: the state machine now renders the
+                // foreign-lock reason; the verbatim reject goes to the console.
+                Debug.LogWarning(rejectReason);
                 Repaint();
                 return;
             }
 
-            _status = EditorApplication.isPlaying
-                ? "Running epsilon search via Host MonoBehaviour…"
-                : "Entering Play Mode to run epsilon search via Host…";
+            _startedFromThisWindow = true;
+            _hasCompletion = false;
+            _document = null;
+            _resultRows = Array.Empty<ResultRow>();
+            _hasProgress = false;
+            _interrupting = false;
+            _progressPhaseIndex = (int)EpsilonSearchPhase.NotStarted;
+            _progressStatusLine = StatusEnteringPlayMode;
+            _progressStepLine = string.Empty;
+            _progressEpsilonLine = string.Empty;
+            Repaint();
+        }
+
+        private void ShowInSceneView()
+        {
+            var session = GhostVisualizationSession.Ensure();
+            session.IsVisible = true;
+            if (_document != null && _document.DrawSet.HasFirstDivergence)
+            {
+                session.FrameFirstDivergence();
+            }
+            else
+            {
+                session.FrameOverview();
+            }
+
+            SceneView.RepaintAll();
+        }
+
+        private void OpenEvidenceFolder()
+        {
+            RefreshEvidenceDirState();
+            if (!_evidenceDirExists)
+            {
+                Repaint();
+                return;
+            }
+
+            EditorUtility.RevealInFinder(_evidenceDir);
+        }
+
+        // --- Host events (the only repaint sources besides user interaction) ---
+
+        private void OnHostSearchProgress(GhostSearchProgress progress)
+        {
+            if (!_startedFromThisWindow)
+            {
+                return;
+            }
+
+            _hasProgress = true;
+            var phaseIndex = (int)progress.Phase;
+            if (phaseIndex < 0 || phaseIndex >= PhaseStripByPhase.Length)
+            {
+                phaseIndex = 0;
+            }
+
+            _progressPhaseIndex = phaseIndex;
+
+            _sb.Clear();
+            _sb.Append("Поиск: фаза ").Append(PhaseNameByPhase[phaseIndex]);
+            if (progress.CurrentStep > 0)
+            {
+                _sb.Append(", шаг ").Append(progress.CurrentStep);
+                _sb.Append(progress.StepTotal > 0 ? "/" : " / ");
+                if (progress.StepTotal > 0)
+                {
+                    _sb.Append(progress.StepTotal);
+                }
+                else
+                {
+                    _sb.Append('—');
+                }
+            }
+
+            _progressStatusLine = _sb.ToString();
+
+            _sb.Clear();
+            _sb.Append("Шаг: ");
+            if (progress.CurrentStep > 0)
+            {
+                _sb.Append(progress.CurrentStep);
+                if (progress.StepTotal > 0)
+                {
+                    _sb.Append('/').Append(progress.StepTotal);
+                }
+                else
+                {
+                    _sb.Append(" / —");
+                }
+            }
+            else
+            {
+                _sb.Append('—');
+            }
+
+            _progressStepLine = _sb.ToString();
+
+            if (progress.HasEpsilon)
+            {
+                _sb.Clear();
+                _sb.Append("Epsilon: ").Append(FormatMetres(progress.EpsilonMetres));
+                _progressEpsilonLine = _sb.ToString();
+            }
+
             Repaint();
         }
 
         private void OnHostSearchCompleted(GhostSearchCompletion completion)
         {
+            _interrupting = false;
+            _hasProgress = false;
+            _startedFromThisWindow = false;
+            _hasCompletion = true;
+            _completionStatus = completion.Status ?? string.Empty;
+            _writeSucceeded = completion.WriteSucceeded;
+            _document = completion.Document;
+
             if (completion.Document != null && completion.WriteSucceeded)
             {
-                _document = completion.Document;
-                _evidenceDir = completion.Write.RunDirectory;
-                _metricsPath = completion.Write.MetricsPath;
-                _summaryText = GhostEvidenceWriter.BuildSummaryMarkdown(completion.Document);
+                _evidenceDir = completion.Write.RunDirectory ?? string.Empty;
 
                 var session = GhostVisualizationSession.Ensure();
                 session.ShowBaseline = _showBaseline;
                 session.ShowFans = _showFans;
+
+                if (completion.Document.Success)
+                {
+                    // First successful run collapses the setup block (state in EditorPrefs).
+                    _setupExpanded = false;
+                    EditorPrefs.SetBool(SetupCollapsedKey, true);
+                }
             }
 
-            _status = completion.Status;
+            if (completion.Document != null)
+            {
+                BuildResultPresentation(completion.Document);
+            }
+            else
+            {
+                _resultRows = Array.Empty<ResultRow>();
+                _verdictText = string.Empty;
+                _verdictMeaning = string.Empty;
+            }
+
+            RefreshEvidenceDirState();
             Repaint();
             SceneView.RepaintAll();
         }
 
-        private void RegenerateScreenshots()
+        private void OnPlayModeStateChanged(PlayModeStateChange state)
         {
-            if (_document == null || string.IsNullOrEmpty(_evidenceDir))
+            Repaint();
+        }
+
+        private void OnCompilationEvent(object context)
+        {
+            Repaint();
+        }
+
+        // --- Presentation building (event-time only; never per frame) ---
+
+        private void BuildResultPresentation(GhostEvidenceDocument document)
+        {
+            var search = document.SearchResult;
+            _verdictText = search.Verdict;
+            _verdictMeaning = MeaningFor(search.VerdictKind);
+
+            var rows = new System.Collections.Generic.List<ResultRow>(8);
+
+            if (!document.Success)
             {
-                _status = "No evidence document loaded.";
+                // Engine FAILED / INCOMPLETE: verbatim verdict + error reason, no numbers.
+                if (!string.IsNullOrEmpty(document.ErrorReason))
+                {
+                    rows.Add(new ResultRow("Ошибка", document.ErrorCode + ": " + document.ErrorReason));
+                }
+
+                _resultRows = rows.ToArray();
                 return;
             }
 
+            var rangeValue = FormatRange(search.SearchRangeStartMetres, search.SearchRangeCeilingMetres);
+            switch (search.VerdictKind)
+            {
+                case EpsilonSearchVerdictKind.ThresholdBracketFound:
+                    if (search.HasThresholdEstimate)
+                    {
+                        rows.Add(new ResultRow("Порог (оценка)", FormatMetres(search.ThresholdEstimateMetres)));
+                        rows.Add(new ResultRow(
+                            "Вилка",
+                            FormatRange(search.LargestStableEpsilonMetres, search.SmallestDivergentEpsilonMetres)));
+                        rows.Add(new ResultRow("Ширина вилки", FormatMetres(search.FinalBracketWidthMetres)));
+                    }
+
+                    break;
+
+                case EpsilonSearchVerdictKind.StableWithinTestedRange:
+                    rows.Add(new ResultRow("Проверенный диапазон", rangeValue));
+                    if (search.HasLargestStableEpsilon)
+                    {
+                        rows.Add(new ResultRow("Макс. стабильный ε", FormatMetres(search.LargestStableEpsilonMetres)));
+                    }
+
+                    rows.Add(new ResultRow(
+                        "Тел разошлось",
+                        "0 из " + BugCam.Core.TowerProbeRequestFactory.ExpectedBodyCount.ToString(CultureInfo.InvariantCulture)));
+                    break;
+
+                case EpsilonSearchVerdictKind.NonMonotonicWithinTestedRange:
+                    rows.Add(new ResultRow("Проверенный диапазон", rangeValue));
+                    if (GhostEvidenceWriter.HasReferenceEpsilon(search))
+                    {
+                        rows.Add(new ResultRow(
+                            "Эталонный ε (фан)",
+                            FormatMetres(search.ReferenceEpsilonMetres) + " — не порог"));
+                    }
+
+                    break;
+
+                case EpsilonSearchVerdictKind.DivergentAtSearchFloor:
+                    rows.Add(new ResultRow("Проверенный диапазон", rangeValue));
+                    if (search.HasSmallestDivergentEpsilon)
+                    {
+                        rows.Add(new ResultRow(
+                            "Мин. расходящийся ε",
+                            FormatMetres(search.SmallestDivergentEpsilonMetres) + " (= пол поиска)"));
+                    }
+
+                    break;
+            }
+
+            if (GhostEvidenceWriter.HasPrimaryDivergenceMetrics(document))
+            {
+                var primary = document.PrimaryDivergence;
+                rows.Add(new ResultRow(
+                    "Первый кадр",
+                    primary.FirstDivergenceFrame.ToString(CultureInfo.InvariantCulture) +
+                    (primary.FirstDivergenceBodyId >= 0
+                        ? " (body " + primary.FirstDivergenceBodyId.ToString(CultureInfo.InvariantCulture) + ")"
+                        : string.Empty)));
+                rows.Add(new ResultRow(
+                    "Разброс (макс)",
+                    FormatMetres(primary.MaxSpreadMetres) +
+                    " (body " + primary.MaxSpreadBodyId.ToString(CultureInfo.InvariantCulture) + ")"));
+                if (primary.AmplificationDefined)
+                {
+                    rows.Add(new ResultRow(
+                        "Усиление",
+                        primary.Amplification.ToString("R", CultureInfo.InvariantCulture) + "×"));
+                }
+
+                rows.Add(new ResultRow(
+                    "Тел разошлось",
+                    primary.AffectedBodyCount.ToString(CultureInfo.InvariantCulture) +
+                    " из " + primary.BodyCount.ToString(CultureInfo.InvariantCulture) +
+                    " — полный список в уликах"));
+            }
+
+            _resultRows = rows.ToArray();
+        }
+
+        private static string MeaningFor(EpsilonSearchVerdictKind kind)
+        {
+            switch (kind)
+            {
+                case EpsilonSearchVerdictKind.ThresholdBracketFound:
+                    return "Найдена вилка порога: ниже нижней границы вилки сцена стабильна, " +
+                           "выше верхней — устойчиво расходится.";
+                case EpsilonSearchVerdictKind.StableWithinTestedRange:
+                    return "Во всём проверенном диапазоне возмущений устойчивого расхождения нет. " +
+                           "Это полный, валидный результат.";
+                case EpsilonSearchVerdictKind.NonMonotonicWithinTestedRange:
+                    return "Расхождение в диапазоне есть, но без монотонной границы: вилку порога " +
+                           "построить нельзя. Фан построен вокруг эталонного ε — это не порог.";
+                case EpsilonSearchVerdictKind.DivergentAtSearchFloor:
+                    return "Расхождение уже при минимальном проверенном возмущении — стабильной " +
+                           "нижней границы в диапазоне нет. Порог, если существует, ниже пола поиска.";
+                default:
+                    return string.Empty;
+            }
+        }
+
+        private void CacheSearchRange()
+        {
+            var settings = DivergenceSettings.CreateDefault();
             try
             {
-                var result = GhostScreenshotCapture.Capture(_document, _evidenceDir);
-                _status =
-                    "Screenshots: overview=" + result.OverviewWritten +
-                    " firstDiv=" + result.FirstDivergenceWritten +
-                    " maxSpread=" + result.MaxSpreadWritten +
-                    " final=" + result.FinalWritten;
+                var searchSettings = settings.ToSearchSettings();
+                _epsFloorMetres = searchSettings.EpsilonStartMetres;
+                _epsCeilingMetres = searchSettings.EpsilonCeilingMetres;
             }
-            catch (Exception ex)
+            finally
             {
-                _status = "Screenshot failed: " + ex.Message;
+                UnityEngine.Object.DestroyImmediate(settings);
+            }
+
+            _rangeText = FormatRange(_epsFloorMetres, _epsCeilingMetres);
+        }
+
+        private void RebuildStepsTooltip()
+        {
+            // The harness steps with BugCamConstants.FixedStep — a constant, not the
+            // project's Time.fixedDeltaTime — so the duration must be computed from it.
+            var seconds = _stepCount * BugCamConstants.FixedStep;
+            _stepsLabel = new GUIContent(
+                "Шагов",
+                "Шаги физики × BugCamConstants.FixedStep (" +
+                BugCamConstants.FixedStep.ToString("R", CultureInfo.InvariantCulture) + " с). " +
+                _stepCount.ToString(CultureInfo.InvariantCulture) + " шага(-ов) = " +
+                seconds.ToString("R", CultureInfo.InvariantCulture) + " с симуляции.");
+        }
+
+        private void RebuildSetupSummary()
+        {
+            _sb.Clear();
+            _sb.Append("Настройка   (").Append(AxisOptions[_axisIndex].text);
+            _sb.Append(", ").Append(_strategy);
+            _sb.Append(", ").Append(_stepCount).Append(" шагов, ε ").Append(_rangeText).Append(')');
+            _setupSummary = _sb.ToString();
+        }
+
+        private void RefreshEvidenceDirState()
+        {
+            _evidenceDirExists = !string.IsNullOrEmpty(_evidenceDir) && Directory.Exists(_evidenceDir);
+            _priorRunLabel = string.IsNullOrEmpty(_evidenceDir)
+                ? string.Empty
+                : "Прошлый прогон: " + Path.GetFileName(_evidenceDir.TrimEnd(
+                    Path.DirectorySeparatorChar,
+                    Path.AltDirectorySeparatorChar));
+        }
+
+        private static void EnsureStyles()
+        {
+            if (_verdictStyle == null)
+            {
+                _verdictStyle = new GUIStyle(EditorStyles.boldLabel)
+                {
+                    fontSize = 18,
+                    wordWrap = true
+                };
+            }
+
+            if (_wrapLabelStyle == null)
+            {
+                _wrapLabelStyle = new GUIStyle(EditorStyles.label) { wordWrap = true };
+            }
+
+            if (_reasonStyle == null)
+            {
+                _reasonStyle = new GUIStyle(EditorStyles.miniLabel) { wordWrap = true };
             }
         }
 
-        private void OpenEvidenceFolder()
+        private static string FormatRange(float floorMetres, float ceilingMetres)
         {
-            var path = _evidenceDir;
-            if (string.IsNullOrEmpty(path))
-            {
-                var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
-                path = Path.Combine(
-                    projectRoot,
-                    GhostEvidenceSchema.CheckpointRelativeRoot.Replace('/', Path.DirectorySeparatorChar));
-            }
-
-            if (!Directory.Exists(path))
-            {
-                Directory.CreateDirectory(path);
-            }
-
-            EditorUtility.RevealInFinder(path);
-        }
-
-        private static Vector3 NormalizeAxis(Vector3 axis)
-        {
-            if (axis == Vector3.zero)
-            {
-                return Vector3.right;
-            }
-
-            return axis.normalized;
-        }
-
-        private static string AxisName(Vector3 axis)
-        {
-            if ((axis - Vector3.right).sqrMagnitude < 1e-12f)
-            {
-                return "X";
-            }
-
-            if ((axis - Vector3.up).sqrMagnitude < 1e-12f)
-            {
-                return "Y";
-            }
-
-            if ((axis - Vector3.forward).sqrMagnitude < 1e-12f)
-            {
-                return "Z";
-            }
-
-            return axis.ToString();
+            return floorMetres.ToString("R", CultureInfo.InvariantCulture) + " … " +
+                   ceilingMetres.ToString("R", CultureInfo.InvariantCulture) + " m";
         }
 
         private static string FormatMetres(float metres)

@@ -3,7 +3,8 @@
 > Updated by the agent after every completed block. This file is the memory between sessions.
 
 ## Current position
-- Active block: 2.1 (evidence camera selection on `feat/block-2.1-evidence-cameras`) — deterministic core landed; RetroPlayer + 2×2 compositing deferred to a follow-up (see Evidence log 2026-08-03 below).
+- Active block: 2.2-window-ux (Ghost Visualization window UX pass on `feat/block-2.2-window-ux`, user-inserted block — not PLAN's "Block 2.2 Evidence overlay + export", which remains not started). Code + full checkpoint done; live Unity MCP screenshot verification of the window states remains PENDING (no live Editor this session).
+- Block 2.1 (evidence camera selection): deterministic core landed and merged as `fd54ab9` (#7); RetroPlayer + 2×2 compositing deferred to a follow-up (see Evidence log 2026-08-03 below).
 - Day 1 checkpoint: PASSED (Scene View fan + success-path honest reports + evidence bundle)
 - Day 2 checkpoint: NOT PASSED — `EvidenceCameras.cs` + `camera-plan.json` exist and are batchmode-verified; RetroPlayer, MP4, cockpit, SceneSight remain not started; 2×2 viewport/RenderTexture compositing remains not started.
 - PR #6 (Block 1.5, Ghost Visualization + evidence bundles): reviewed and squash-merged. Squash SHA `558d4f1a763808e4eb3e4cbbe675b3d698cb1cf5`. Merge base `1bd10113eeeb8376ae31379b391e8c408d2884a8`. Independent review of the final commit range `3f2c93d6e6997f91ad0f431af6a5fc756ff0eb38..35bdb6f8d0290b2c7a2023061ccbeeaa1cb8647d` found no blocker (interrupt cleanup destroys only the Host-owned TEMP runner, Busy/Pending always clear, cleanup is idempotent, no false `SearchCompleted` success on interrupt, regression test is behavioral). `local main` fast-forwarded to the squash SHA; no post-merge bookkeeping commit was made on `main` (this STATUS update lands on the Block 2.1 branch instead, per the no-`main`-commit rule).
@@ -20,6 +21,7 @@
 | 1.5 | Ghost visualization + evidence bundle (`BugCam.Evidence` + Scene View drawer + Ghost Visualization window + interrupt-safe Host cleanup) | See Evidence log 2026-08-03 (pr6-interrupt-fix) + 2026-08-03 merge review below | squash `558d4f1a763808e4eb3e4cbbe675b3d698cb1cf5` (#6, merged) |
 
 ## Open findings / blockers
+- OPEN (backlog, Block 2.2-window-ux): Coverage row in the Ghost Visualization window — add only after camera-plan integration into `GhostEvidenceDocument`. `EvidenceCameras` is not wired into the ghost-evidence pipeline, so the window currently has no coverage verdict to show for either OK or LOW; per the ratified window spec the slot is NOT reserved and cameras are NOT wired in that block.
 - OPEN (Block 2.1 scope): `RetroPlayer` (kinematic scrub/slow-mo playback) and the actual 2×2 viewport/RenderTexture compositing are **not started**. `EvidenceCameras.cs` computes and ranks the 4 camera positions but nothing renders them yet. Needs a live GPU Editor session to verify visually, same standard Block 1.5's screenshot capture was held to after the `#1F1F24` blank-PNG correction — do not claim this done from batchmode alone.
 - SUPERSEDED 2026-08-03 (was: Block 2.1 approximations for contact proximity and the 100:10:1 weighted-sum ranking): both criteria were measured dead in the live calibration (contact constant across the single-radius candidate sphere; trajectory never influencing a winner) and were REMOVED from the algorithm rather than kept as decorative weights — see the "pre-PR7 blocker fixes" Evidence log entry. Cameras 2-4 now rank by orthogonality alone. Close-up/contact cameras (SPEC §7) remain backlog and additionally require multi-radius candidate generation.
 - OPEN (Block 2.1 design): bodies are scored as world-axis-aligned AABBs (recorded position ± half of `SimulationBodyDefinition.Size`) at each queried frame — rotation is not applied to the bounding box. A documented simplification, not a silent one; revisit if a future scene relies on rotated bodies for occlusion accuracy.
@@ -38,6 +40,32 @@ Found 2026-08-03 during a static audit of every ratified `DivergenceSettings` fi
 3. **RETRACTED as factually incorrect (2026-08-03): `EpsilonGrowthFactor` is NOT dead and there is no arithmetic mismatch.** The original suspicion (a `EpsilonGrowthFactor=2` vs `LadderPointCount=12` inconsistency) misread the search as one progression. It is two phases with two independent progressions: the ladder is built by log-uniform interpolation over `[EpsilonStart, EpsilonCeiling]` in `EpsilonSearch.cs:812 BuildLogUniformLadder` (step = `(ceiling/start)^(1/(count-1))`, never references `EpsilonGrowthFactor`), while `EpsilonGrowthFactor` is genuinely applied — iteratively, in the loop — in the Exponential-refinement phase only (`EpsilonSearch.cs:736-755 AdvanceExponentialCursor`: cursor `*=` / `/=` factor per probe, entered from `ClassifyLadderAndAdvance:580`). Both are internally consistent; the two progressions coincide only by accident when `ceiling/start = factor^(LadderPointCount-1)`. Residual (cosmetic only): `DivergenceSettings.cs`'s why-comments for the two fields both describe traversing the same span without naming their phases — a one-line clarification in each would prevent this misreading recurring.
 
 ## Evidence log
+
+### 2026-08-03 — Block 2.2-window-ux: Ghost Visualization window UX pass (`feat/block-2.2-window-ux`)
+
+**Base:** `fd54ab9` (= `main`, Block 2.1 squash). UI-only block ratified by the human via an ASCII mockup review (two rounds); search functionality untouched.
+
+**Baseline measurement BEFORE any code change (explicit instruction):** EditMode on untouched `fd54ab9` = **103/103 Passed** (`Library/BugCamEvidence/Block2.2-base/EditMode.xml`). This **corrects the stale 102/102** recorded in the Block 2.1 entry below: commit `05edadc` ("pre-PR7 blocker fixes") added exactly one EditMode regression (fully-occluded best candidate must yield LOW) after that table was written, and `git diff 05edadc fd54ab9` is empty, so `main` carries the 103rd test. Not a drift — a stale doc row.
+
+**Commit 1 (Core, isolated):** `dd349f1` adds read-only progress accessors to `EpsilonSearch`: `CurrentPhaseStep`, `PhaseStepTotal` (-1 = honestly unknown, Exponential only), `HasOutstandingProbe`, `CurrentEpsilonMetres`. Pure getters over existing private fields; zero control-flow change, zero allocations, no test edits. EditMode after: 103/103 (`Block2.2-core-props`).
+
+**Commit 2 (Editor):** window state machine + host progress events.
+- `GhostEvidencePlayModeHost`: new `SearchProgress` event + `GhostSearchProgress` readonly struct; the runner MonoBehaviour polls the Core accessors in `Update` (field compares only, zero alloc on quiet frames) and raises the event on change. All Block 1.5 lifecycle contracts untouched (`TryStartTowerSearch` gate, `StartCoroutine(Run(`, `yield return runner.Run(`, interrupt cleanup).
+- `GhostVisualizationWindow` rewritten around the ratified state machine IDLE → READY → SEARCHING → DONE. IDLE = transient blockers only, each rendered as its own reason row under the disabled button (compiling / play-mode transition / foreign Busy-Pending host lock / manually-started Play Mode); READY shows body count and the ε search range; SEARCHING shows phase strip + real step (`шаг 3 / —` when total unknown) + current ε and a working «Прервать» (Play Mode exit; the host's existing interrupt cleanup owns the completion — the window never synthesizes a verdict line); DONE renders the verdict verbatim and LARGE, one meaning line, and only the numbers defined for that verdict (availability-flag-gated; no "unavailable" placeholders anywhere). INTERRUPTED is neutral (verbatim host status, no numbers, folder button disabled with reason). Write-failure path: verdict + numbers + verbatim error banner, folder button disabled with reason. Domain reload: document dies → result block does not render (no stale numbers); only «Открыть папку улик» survives via the serialized path. First-run "3 шага" block + EditorPrefs; setup collapses after first successful run; every field carries a unit tooltip (step duration computed from `BugCamConstants.FixedStep` — the harness steps with the constant, NOT `Time.fixedDeltaTime`, ratified deviation). Removed per ratified mockup: label legend, Copy Summary / Copy Metrics Path, Regenerate Screenshots, summary TextArea. Perf: progress strings rebuilt only in event handlers (shared StringBuilder, cached GUIContent); `Repaint` only from search/compilation/play-mode events.
+- One compile fix during checkpoint: the Editor facade `BugCam.Editor.TowerProbeRequestFactory` shadows the Core type inside the Editor namespace and has no `ExpectedBodyCount`; the window now fully qualifies `BugCam.Core.TowerProbeRequestFactory.ExpectedBodyCount`.
+
+**VERIFIED FACT — batchmode Unity `6000.3.21f1` (`run-checkpoint.ps1 -Suite All`, exit 0):**
+
+| Suite | total | passed | failed | result | XML |
+|---|---|---|---|---|---|
+| EditMode | 103 | 103 | 0 | Passed | `Library/BugCamEvidence/Block2.2-final/EditMode.xml` |
+| PlayMode | 21 | 21 | 0 | Passed | `Library/BugCamEvidence/Block2.2-final/PlayMode.xml` |
+
+No test files touched; counts identical to the pre-change base (103) and to Block 2.1 PlayMode (21).
+
+**PENDING:** live Unity MCP screenshot verification of every window state (IDLE / READY / SEARCHING / DONE × BRACKET FOUND / STABLE / INTERRUPTED) — requires a live Editor session with the MCP server; batchmode cannot render EditorWindows. PR stays OPEN (explicit instruction: do not merge).
+
+**Environment note:** first baseline attempt failed with `Win32 IO returned 112` (drive X: at 0 bytes free) — regenerable Unity caches (`Library/Bee`, `ShaderCache`) cleared and the X: recycle bin emptied with the human's explicit approval; ~13.5 GB free afterwards.
 
 ### 2026-08-03 — Pre-PR7 blocker fixes: occlusion-coverage verdict + degenerate ranking removed; physics documentation facts
 
