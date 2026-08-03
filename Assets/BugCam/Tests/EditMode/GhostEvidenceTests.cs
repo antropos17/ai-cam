@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Security.Cryptography;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -197,7 +198,8 @@ namespace BugCam.Tests
             Assert.That(json, Does.Contain("\"finalBracketWidthMetres\":null"));
 
             var console = FormatHonestConsole(document);
-            Assert.That(console, Does.Contain("thresholdEstimateMetres=null").Or.Contain("succeeded=False"));
+            Assert.That(console, Does.Contain("thresholdEstimateMetres=null"));
+            Assert.That(console, Does.Contain("succeeded=False"));
             Assert.That(console, Does.Not.Match("thresholdEstimateMetres=0(\r|\n|$)"));
         }
 
@@ -323,17 +325,152 @@ namespace BugCam.Tests
         [Test]
         public void FirstDivergenceMarkerPrefersMaxSpreadBodyId()
         {
+            // Multi-body Framed fixture: body ids {1,2,49} with increasing y-spread so
+            // MaxSpreadBodyId=49 while AffectedBodyIds (ID-sorted) starts at 1.
             var searchResult = DriveBracketSearch();
             var document = BuildDocument(searchResult, Vector3.right);
             Assert.That(Prop<bool>(document, "HasPrimaryFan"), Is.True);
 
             var primary = document.GetType().GetProperty("PrimaryDivergence").GetValue(document);
             var maxSpreadBodyId = Prop<int>(primary, "MaxSpreadBodyId");
+            var affected = Prop<int[]>(primary, "AffectedBodyIds");
+            var firstDivFrame = Prop<int>(primary, "FirstDivergenceFrame");
             Assert.That(maxSpreadBodyId, Is.GreaterThanOrEqualTo(0));
+            Assert.That(affected, Is.Not.Null.And.Not.Empty);
+            Assert.That(firstDivFrame, Is.GreaterThanOrEqualTo(0));
+            Assert.That(
+                affected[0],
+                Is.Not.EqualTo(maxSpreadBodyId),
+                "Fixture must keep AffectedBodyIds[0] != MaxSpreadBodyId so wrong selection fails closed.");
+
+            var fans = Arr(document, "Fans");
+            var primaryFan = fans.GetValue(Prop<int>(document, "PrimaryFanIndex"));
+            var primaryRun = Prop<object>(primaryFan, "Run");
+
+            var samplerType = Type.GetType("BugCam.Evidence.GhostTrajectorySampler, BugCam.Evidence");
+            Assert.That(samplerType, Is.Not.Null);
+            var findBodyIndex = samplerType.GetMethod(
+                "FindBodyIndex",
+                BindingFlags.Public | BindingFlags.Static);
+            var tryGetBodyPosition = samplerType.GetMethod(
+                "TryGetBodyPosition",
+                BindingFlags.Public | BindingFlags.Static);
+            Assert.That(findBodyIndex, Is.Not.Null);
+            Assert.That(tryGetBodyPosition, Is.Not.Null);
+
+            var maxBodyIndex = (int)findBodyIndex.Invoke(null, new[] { primaryRun, maxSpreadBodyId });
+            Assert.That(maxBodyIndex, Is.GreaterThanOrEqualTo(0));
+            var expectedArgs = new object[] { primaryRun, maxBodyIndex, firstDivFrame, null };
+            Assert.That((bool)tryGetBodyPosition.Invoke(null, expectedArgs), Is.True);
+            var expectedWorld = (Vector3)expectedArgs[3];
+
+            var wrongBodyIndex = (int)findBodyIndex.Invoke(null, new[] { primaryRun, affected[0] });
+            Assert.That(wrongBodyIndex, Is.GreaterThanOrEqualTo(0));
+            var wrongArgs = new object[] { primaryRun, wrongBodyIndex, firstDivFrame, null };
+            Assert.That((bool)tryGetBodyPosition.Invoke(null, wrongArgs), Is.True);
+            var wrongWorld = (Vector3)wrongArgs[3];
+            Assert.That(
+                wrongWorld,
+                Is.Not.EqualTo(expectedWorld),
+                "AffectedBodyIds[0] and MaxSpreadBodyId samples must differ at FirstDivergenceFrame.");
 
             var drawSet = document.GetType().GetProperty("DrawSet").GetValue(document);
             Assert.That(Prop<bool>(drawSet, "HasFirstDivergence"), Is.True);
             Assert.That(Prop<bool>(drawSet, "HasMaxSpread"), Is.True);
+            Assert.That(
+                Prop<Vector3>(drawSet, "FirstDivergenceWorld"),
+                Is.EqualTo(expectedWorld),
+                "First-divergence marker must sample MaxSpreadBodyId at FirstDivergenceFrame.");
+            Assert.That(
+                Prop<Vector3>(drawSet, "FirstDivergenceWorld"),
+                Is.Not.EqualTo(wrongWorld),
+                "First-divergence marker must not regress to AffectedBodyIds[0].");
+
+            var markers = Arr(drawSet, "Markers");
+            object firstMarker = null;
+            for (var i = 0; i < markers.Length; i++)
+            {
+                var marker = markers.GetValue(i);
+                if (Prop<string>(marker, "Kind") == "firstDivergence" && Prop<bool>(marker, "Available"))
+                {
+                    firstMarker = marker;
+                    break;
+                }
+            }
+
+            Assert.That(firstMarker, Is.Not.Null, "Available firstDivergence marker required.");
+            Assert.That(Prop<Vector3>(firstMarker, "Position"), Is.EqualTo(expectedWorld));
+        }
+
+        [Test]
+        public void ScreenshotCaptureFailsClosedOnBlankOrWritesDistinctPngs()
+        {
+            var searchResult = DriveBracketSearch();
+            var document = BuildDocument(searchResult, Vector3.right);
+            Assert.That(Prop<bool>(document, "HasPrimaryFan"), Is.True);
+
+            var root = Path.Combine(
+                Path.GetTempPath(),
+                "BugCamGhostShot-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+
+            try
+            {
+                var captureType = Type.GetType(
+                    "BugCam.Editor.GhostScreenshotCapture, BugCam.Editor");
+                Assert.That(captureType, Is.Not.Null, "GhostScreenshotCapture must compile.");
+                var capture = captureType.GetMethod(
+                    "Capture",
+                    new[] { document.GetType(), typeof(string) });
+                Assert.That(capture, Is.Not.Null);
+
+                var result = capture.Invoke(null, new object[] { document, root });
+                var overview = Prop<bool>(result, "OverviewWritten");
+                var first = Prop<bool>(result, "FirstDivergenceWritten");
+                var max = Prop<bool>(result, "MaxSpreadWritten");
+                var finalShot = Prop<bool>(result, "FinalWritten");
+                var visuals = Prop<string>(result, "VisualsDirectory");
+                var pngs = Directory.Exists(visuals)
+                    ? Directory.GetFiles(visuals, "*.png")
+                    : Array.Empty<string>();
+
+                var anyWritten = overview || first || max || finalShot;
+                if (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Null)
+                {
+                    Assert.That(anyWritten, Is.False, "Null graphics must omit named PNG visuals.");
+                    Assert.That(pngs.Length, Is.EqualTo(0));
+                    return;
+                }
+
+                Assert.That(anyWritten, Is.True, "GPU capture should retain named PNG visuals.");
+                Assert.That(overview, Is.True);
+                Assert.That(first, Is.True);
+                Assert.That(max, Is.True);
+                Assert.That(finalShot, Is.True);
+                Assert.That(pngs.Length, Is.EqualTo(4));
+
+                var hashes = new string[pngs.Length];
+                for (var i = 0; i < pngs.Length; i++)
+                {
+                    var bytes = File.ReadAllBytes(pngs[i]);
+                    using (var sha = SHA256.Create())
+                    {
+                        hashes[i] = Convert.ToBase64String(sha.ComputeHash(bytes));
+                    }
+                }
+
+                Assert.That(
+                    hashes.Distinct().Count(),
+                    Is.GreaterThan(1),
+                    "When visuals are retained they must not be byte-identical copies.");
+            }
+            finally
+            {
+                if (Directory.Exists(root))
+                {
+                    Directory.Delete(root, true);
+                }
+            }
         }
 
         [Test]

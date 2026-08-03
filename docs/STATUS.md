@@ -59,6 +59,24 @@ EditMode +14 (`GhostEvidenceTests`). PlayMode +1 smoke (`GhostEvidencePlayModeTe
 - Real Tower search (step 32, AscendFromStart, body 49, axis X) → verdict `THRESHOLD BRACKET FOUND`; success-path console `BUGCAM_BLOCK_1_4_EPSILON_SEARCH` + `BUGCAM_BLOCK_1_5_GHOST_EVIDENCE`.
 - Scene View session: 15 fans, 10 ranked bodies, 160 polylines, first-divergence + max-spread markers; `activeSceneDirty=false`; no leaked `BugCamGhost*` / `*_TEMP` GameObjects; sceneCount returned to 1; Play Mode exited cleanly.
 - Generated run evidence: `Library/BugCamEvidence/Runs/ghost-20260803T024343884-body49-X-AscendFromStart/` (+ checkpoint pointer under `Library/BugCamEvidence/Block1.5/`).
+- **CORRECTION — named PNGs in that run are NOT visual success:** `overview` / `first-divergence` / `max-spread` / `final` were byte-identical solid clear-color blanks (`#1F1F24`, same SHA256). Prior GL path omitted `Material.SetPass`, so lines never composited. Do not cite those PNGs as proof of distinct framing.
+
+### 2026-08-02 — Block 1.5 gate fix (first-div marker + screenshot compositing)
+
+**MERGE_BLOCKER:** `FirstDivergenceMarkerPrefersMaxSpreadBodyId` now asserts draw-set / marker world position equals `GhostTrajectorySampler` sample of `MaxSpreadBodyId` at `FirstDivergenceFrame`, and fails closed when that would equal `AffectedBodyIds[0]` (multi-body fixture keeps IDs distinct).
+
+**Screenshot capture:** `GhostScreenshotCapture` uses `Hidden/Internal-Colored` + `Material.SetPass(0)` before GL lines/markers; refuses solid clear-color frames (no blank PNG kept). EditMode contract `ScreenshotCaptureFailsClosedOnBlankOrWritesDistinctPngs` accepts honest omit under `-nographics`, or distinct hashes when GPU compositing succeeds. Named PNGs from GPU editor sessions are the only valid visual proof — not batchmode blanks.
+
+**Honesty:** failure-console assert requires both `thresholdEstimateMetres=null` and `succeeded=False`. Day 2 not started.
+
+**VERIFIED FACT — batchmode Unity `6000.3.21f1`** (`run-checkpoint.ps1 -Suite All -EvidenceDir Library\BugCamEvidence\Block1.5-review-fix-2`, exit 0):
+
+| Suite | total | passed | failed | result | XML |
+|---|---|---|---|---|---|
+| EditMode | 85 | 85 | 0 | Passed | `Library/BugCamEvidence/Block1.5-review-fix-2/EditMode.xml` |
+| PlayMode | 20 | 20 | 0 | Passed | `Library/BugCamEvidence/Block1.5-review-fix-2/PlayMode.xml` |
+
+EditMode +1 vs prior tip (`ScreenshotCaptureFailsClosedOnBlankOrWritesDistinctPngs`). Named GPU PNGs not regenerated this pass (no Unity MCP / interactive GPU editor); capture now omits under Null graphics instead of keeping `#1F1F24` blanks.
 
 **Day 2:** not started.
 

@@ -4,6 +4,7 @@ using System.IO;
 using BugCam.Evidence;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace BugCam.Editor
 {
@@ -14,6 +15,8 @@ namespace BugCam.Editor
     /// </summary>
     public static class GhostScreenshotCapture
     {
+        private static Material s_LineMaterial;
+
         public readonly struct CaptureResult
         {
             public CaptureResult(
@@ -61,6 +64,13 @@ namespace BugCam.Editor
             var first = false;
             var max = false;
             var final = false;
+
+            // batchmode -nographics (Null device) cannot composite GL lines; omit rather than
+            // writing identical clear/garbage PNGs that look like visual success.
+            if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null)
+            {
+                return new CaptureResult(false, false, false, false, visuals);
+            }
 
             GameObject cameraObject = null;
             Camera camera = null;
@@ -201,6 +211,13 @@ namespace BugCam.Editor
             try
             {
                 RenderTexture.active = rt;
+                var material = GetLineMaterial();
+                if (material == null || !material.SetPass(0))
+                {
+                    // Fail closed: do not write a blank clear-color PNG as a "visual".
+                    return false;
+                }
+
                 GL.PushMatrix();
                 GL.LoadProjectionMatrix(camera.projectionMatrix);
                 GL.modelview = camera.worldToCameraMatrix;
@@ -217,6 +234,18 @@ namespace BugCam.Editor
                 {
                     tex.ReadPixels(new Rect(0, 0, rt.width, rt.height), 0, 0);
                     tex.Apply();
+                    if (IsNearlySolidClear(tex, camera.backgroundColor))
+                    {
+                        // Fail closed: solid clear-color frames are not valid ghost visuals
+                        // (common under batchmode -nographics when GL never composites).
+                        if (File.Exists(path))
+                        {
+                            File.Delete(path);
+                        }
+
+                        return false;
+                    }
+
                     File.WriteAllBytes(path, tex.EncodeToPNG());
                 }
                 finally
@@ -230,6 +259,58 @@ namespace BugCam.Editor
             }
 
             return File.Exists(path);
+        }
+
+        private static bool IsNearlySolidClear(Texture2D tex, Color clear)
+        {
+            if (tex == null || tex.width <= 0 || tex.height <= 0)
+            {
+                return true;
+            }
+
+            const float tol = 0.03f;
+            var stepX = Math.Max(1, tex.width / 32);
+            var stepY = Math.Max(1, tex.height / 32);
+            for (var y = 0; y < tex.height; y += stepY)
+            {
+                for (var x = 0; x < tex.width; x += stepX)
+                {
+                    var c = tex.GetPixel(x, y);
+                    if (Mathf.Abs(c.r - clear.r) > tol ||
+                        Mathf.Abs(c.g - clear.g) > tol ||
+                        Mathf.Abs(c.b - clear.b) > tol)
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        private static Material GetLineMaterial()
+        {
+            if (s_LineMaterial != null)
+            {
+                return s_LineMaterial;
+            }
+
+            var shader = Shader.Find("Hidden/Internal-Colored");
+            if (shader == null)
+            {
+                return null;
+            }
+
+            s_LineMaterial = new Material(shader)
+            {
+                hideFlags = HideFlags.HideAndDontSave
+            };
+            s_LineMaterial.SetInt("_SrcBlend", (int)BlendMode.SrcAlpha);
+            s_LineMaterial.SetInt("_DstBlend", (int)BlendMode.OneMinusSrcAlpha);
+            s_LineMaterial.SetInt("_Cull", (int)CullMode.Off);
+            s_LineMaterial.SetInt("_ZWrite", 0);
+            s_LineMaterial.SetInt("_ZTest", (int)CompareFunction.Always);
+            return s_LineMaterial;
         }
 
         private static void DrawPolylinesGl(GhostDrawSet drawSet, bool showBaseline, bool showFans)
