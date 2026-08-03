@@ -88,7 +88,7 @@ Possible solver/order sensitivity
 
 Tracked per physics step: position, rotation, linear velocity, angular velocity, sleeping, active state*, contacts*, collision pair IDs*, selected custom state*. (* = backlog beyond v0.1; v0.1 tracks pos/rot/vel/angVel/sleeping only — see PLAN.md.)
 
-Per-body normalized metrics: position error / object scale, rotation error / threshold, velocity error / threshold, contact mismatch*, state mismatch*. Scene Divergence Score = weighted sum over tracked bodies.
+Per-body normalized metrics: position error / object scale, rotation error / threshold, velocity error / threshold, contact mismatch*, state mismatch*. Scene Divergence Score = weighted sum over tracked bodies. (Superseded for v0.1 on 2026-08-03, Block 2.2.1 A3: the score is the MAX per-body weighted norm — the sum was measured degenerate and scene-size-dependent on the 49-body tower; PLAN.md Block 1.3 and docs/CONTRACT-2.2.1.md carry the ratified formula and threshold.)
 
 Divergence is significant only when it: exceeds threshold AND persists several physics steps AND affects an important body or sufficient share of the scene*. This filters numerical noise. (* = the share-of-scene half of this gate is backlog beyond v0.1: the implementation uses a fixed ≥1-affected-body check per PLAN.md Block 1.3 — recorded 2026-08-03 in STATUS.md Known issues #2.)
 
