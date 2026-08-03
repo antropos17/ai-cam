@@ -12,6 +12,7 @@
 - **Писатель улик:** `Evidence/GhostEvidenceWriter.cs` (`Write`, `BuildManifestJson` — секция `settingsSource`, `BuildMetricsJson`). Раскладка: `Library/BugCamEvidence/Runs/<run-id>/` → `manifest.json`, `metrics.json`, `summary.md`, `report/console-report.txt`, `runs/baseline.json` + `fan-00…14`, `visuals/*.png`; указатель `.../Checkpoint/last-run.txt`.
 - **Пины тестов:** source-scan пины хоста/окна — `Tests/EditMode/GhostWindowUxTests.cs` (Play Mode exit-маркер) и `GhostEvidenceTests.cs` (маршрут TryStart/coroutine); контракт A1 (таблица валидации verbatim, приоритет, mm↔m, персистентность) — `SearchEntryParameterizationTests.cs`; контракт захвата A2 (три исхода, детерминизм, hash, предупреждения) — `SceneCaptureTests.cs`; бит-идентичный повтор поиска (A5, закрывает PLAN 1.4 VERIFY (a)) — `Tests/PlayMode/SearchRepeatPlayModeTests.cs`.
 - **Гейт-числа башни (блок 2.2):** threshold `1.98919879E-05` м (19.9 µm), первый кадр 27 (body 49), 21/49 тел, 191×. Сдвиг при дефолтах = STOP.
+- **Выходной гейт A8 (домино, captured-scene path):** `Tests/DominoScene.unity` (5 домино 0.02×0.1×0.06 м + ground; body 1 = наклонённый триггер = дефолтная цель scene-режима) — run `ghost-20260803T174400539…`: THRESHOLD BRACKET FOUND 2.30 мм = порог обнаружения возмущения на самой цели, не цепная дивергенция (product-находка в STATUS). Agreement-замер score- vs позиционной половины гейта на домино: 202/480, opposite-direction 175 ⇒ **score-половина AND-гейта закреплена навсегда** (адъюдикация 2026-08-03, вопрос удаления закрыт).
 - **Batchmode:** `Tools/BugCam/run-checkpoint.ps1 -Suite All -EvidenceDir Library\BugCamEvidence\<dir>`.
 
 ## Core (`Assets/BugCam/Core`, ноль зависимостей от Evidence/Editor)
@@ -53,3 +54,4 @@
 - EditMode (`BugCam.Tests`, reflection-стиль, без ссылок на asmdef'ы): контракты Core, поиск, улики, окно-UX, A1-параметризация
 - PlayMode (`BugCam.Tests.PlayMode`): локальные PhysicsScene-прогоны, детерминизм башни, A/B/A′
 - `Tests/TowerScene.unity` — демо/тест-сцена (PlayMode-прогон её трогает и откатывает)
+- `Tests/DominoScene.unity` — вторая сцена выходного гейта A8: реальные объекты через `SceneCapture` (не фабрика); тестами не регенерируется
