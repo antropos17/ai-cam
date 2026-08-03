@@ -59,7 +59,7 @@ Evidence (Blocks 1.5, 2.1) — same asset:
 | `EvidenceCameraVerticalFovDegrees` = 50 | degrees | vertical FOV of each candidate's virtual camera |
 | `EvidenceCameraNearClip` = 0.05 | metres | near clip plane for candidate frustum construction |
 | `EvidenceCameraFarClip` = 500 | metres | far clip plane for candidate frustum construction |
-| `EvidenceRenderWidth` / `EvidenceRenderHeight` = 1920×1080 | pixels | canonical resolution for pixel-space scoring only (matches Block 2.2 landscape export) |
+| `EvidenceRenderWidth` / `EvidenceRenderHeight` = 1920×1080 | pixels | canonical resolution for pixel-space scoring only (matches Block 2.3 landscape export) |
 | `EvidenceEventBoundsRadiusMultiplier` = 2.5 | × bounds extents | candidate sphere distance from the divergence-event bounds center |
 | ~~`WeightCameraOrthogonality` / `WeightContactProximity` / `WeightTrajectoryAlignment`~~, ~~`ScreenSpaceSeparationNormalizer`~~ | — | REMOVED 2026-08-03 (live calibration): contact proximity was constant across the single-radius candidate sphere, trajectory alignment never influenced a winner, screen-space separation was 4–5 orders below the other terms at the first-divergence frame. Cameras 2–4 rank by orthogonality alone; a single ranking term carries no weight field. |
 
@@ -117,7 +117,7 @@ Console output with threshold / first divergence frame / spread / amplification 
 - occlusion: fractional, 9 raycasts per body (AABB centre + 8 corners), score = hits / 9. Never binary.
 - centrality penalty for bodies near the frame edges
 - ties broken strictly by candidate index, never by float comparison
-- ~~screen-space separation in pixels~~ — REMOVED: at the first-divergence frame the physical offset is ~1 mm, sub-pixel at 1920 from candidate distance; the measured term (0.00036–0.00074 total over 21 bodies) sat 4–5 orders below the other terms and never influenced selection. A separation term scored at the max-spread frame is a candidate for the RetroPlayer follow-up, not part of v0.1 scoring.
+- ~~screen-space separation in pixels~~ — REMOVED: at the first-divergence frame the physical offset is ~1 mm, sub-pixel at 1920 from candidate distance; the measured term (0.00036–0.00074 total over 21 bodies) sat 4–5 orders below the other terms and never influenced selection. A separation term scored at the max-spread frame is a candidate for the Block 2.3 RetroPlayer work, not part of v0.1 scoring.
 
 **Winners** (amended 2026-08-03 after live calibration).
 - Camera 1 = highest score.
@@ -133,19 +133,24 @@ Console output with threshold / first divergence frame / spread / amplification 
 
 **Reproducibility means no live scene.** "Reproducible... by a third party from the same recorded runs" means the algorithm is a pure post-process over `RunResult` + `DivergenceResult` + per-body extents — occlusion uses ray-vs-AABB math over recorded positions, never `Physics.Raycast` against live colliders, and the frustum test builds its view-projection matrix directly (`Matrix4x4`) rather than from a scene `Camera` GameObject. Bodies are treated as world-axis-aligned boxes at each queried frame (position ± half-extent from `SimulationBodyDefinition.Size`), not rotation-aware OBBs — a documented simplification. (Historical note: "contact proximity" was first approximated as distance-from-event-bounds-center; the 2026-08-03 calibration showed that distance is constant across the single-radius candidate sphere, so the criterion was removed rather than kept as a dead term — see **Winners** above.)
 
-**Block 2.1 landing scope.** The first commit lands `EvidenceCameras.cs` (candidate generation, scoring, honest verdict) + `camera-plan.json` schema/writer + EditMode VERIFY — everything checkable in batchmode without a live Editor. `RetroPlayer` (scrub/slow-mo playback) and the actual 2×2 viewport/RenderTexture compositing are deferred to a follow-up commit that needs a live GPU Editor session to verify, the same standard Block 1.5's screenshot capture was held to after the `#1F1F24` blank-PNG correction. Do not claim the deferred pieces as done.
+**Block 2.1 landing scope.** The first commit lands `EvidenceCameras.cs` (candidate generation, scoring, honest verdict) + `camera-plan.json` schema/writer + EditMode VERIFY — everything checkable in batchmode without a live Editor. `RetroPlayer` (scrub/slow-mo playback) and the actual 2×2 viewport/RenderTexture compositing are deferred to Block 2.3 — Evidence overlay + export (needs a live GPU Editor session to verify, the same standard Block 1.5's screenshot capture was held to after the `#1F1F24` blank-PNG correction). Do not claim the deferred pieces as done.
 
-### Block 2.2 — Evidence overlay + export
+### Block 2.2 — Ghost Visualization window UX (user-inserted, merged as PR #8, main = 168c022)
+- Inserted 2026-08-03, ratified via two-round ASCII mockup review; search functionality untouched. Window state machine IDLE → READY → SEARCHING → DONE(verdict verbatim | neutral INTERRUPTED) as the single UI source of truth; disabled controls always render explicit reasons; numbers availability-gated (auto m/mm/µm, 3 significant digits, integer amplification); live progress from real probe steps; host exits only the Play Mode session it itself started.
+- DONE: final gate EditMode 107/107 + PlayMode 21/21 (`Library/BugCamEvidence/Block2.2-final-gate`); window-state screenshots `Library/BugCamEvidence/Block2.2-ui/`.
+
+### Block 2.3 — Evidence overlay + export
 - UI Canvas overlay: test numbers, frame counter, timeline, logo.
 - Unity Recorder: MP4 1080×1920 and 1920×1080. Evidence card: PNG 1200×630 via RenderTexture → EncodeToPNG.
+- `RetroPlayer` (kinematic scrub/slow-mo playback) + the actual 2×2 viewport/RenderTexture compositing (deferred from Block 2.1, needs live GPU Editor session).
 
-### Block 2.3 — EditorWindow
+### Block 2.4 — EditorWindow
 - Single `BugCam` window: target root, duration, epsilon range, `Run Butterfly Test` / `Export` buttons, progress bar, results text, `Focus divergence` button. Minimal styling.
 
-### Block 2.4 — Hero video shoot (human task, agent prepares assets)
+### Block 2.5 — Hero video shoot (human task, agent prepares assets)
 - Fixed 22s script (see SPEC.md §17). Agent outputs: shot list, exact overlay text files, camera-plan, raw footage export presets. Human edits in CapCut. Zero occurrences of "AI".
 
-### Block 2.5 — Landing + waitlist
+### Block 2.6 — Landing + waitlist
 - One page: video, three numbers, `Get early access`, "Send me your fragile scene" form. Headline: `BugCam finds how fragile your scene is — and proves it with a replay.` Deploy: GitHub Pages / Vercel.
 
 ### DAY 2 CHECKPOINT (hard gate)
