@@ -36,7 +36,8 @@ namespace BugCam.Core
         public const float DefaultPerBodyVelocityThreshold = 0.05f;
 
         // 0.2. Why: RE-RATIFIED 2026-08-03 (Block 2.2.1 A3) over measured tower distributions
-        // (Library/BugCamEvidence/Block2.2.1-a3-measure, 480 steps = 15 fans × 32). The score is
+        // (measurement commit e1c1cfc; Library/BugCamEvidence/Block2.2.1-a3-measure, 480 steps
+        // = 15 fans × 32). The score is
         // now the MAX per-body weighted norm (not a sum), so the threshold compares one body's
         // norm regardless of scene size. 0.2 sits 10× above the measured noise p99 (0.0202) and
         // below the measured divergence-class floor (0.311). The lone 0.537 noise transient is
