@@ -45,6 +45,25 @@ Found 2026-08-03 during a static audit of every ratified `DivergenceSettings` fi
 
 ## Evidence log
 
+### 2026-08-03 — Block 2.2.1: A3 step 1 — instrumented max-per-body-norm measurement (measurement only, gate formula UNCHANGED, awaiting adjudication)
+
+**Method:** editor-side instrumented pass (script copy: `Library/BugCamEvidence/Block2.2.1-a3-measure/instrumentation-script.cs`) over the in-memory retained runs of a fresh defaults control search `ghost-20260803T155941732-body49-X-AscendFromStart` (verdict/window numbers identical to the gate). Per step × per body it replicates `DivergenceEngine.cs:180-192` verbatim (posNorm=posErr/objectScale, rotNorm=rotDeg/1°, velNorm=velErr/0.05, sleep 0|1, weights 1/0.5/0.5/1; tower scales all 1 m) and records per-step **max_i bodyNorm_i** (proposed) vs **sum_i** (current) plus `affectedBodies` (per-body 1 mm gate). Classification: step with affectedBodies==0 → noise class, ≥1 → divergence class. Raw data: `per-step.csv` (480 steps), `summary.txt`.
+
+**Measured distributions (defaults, 15 fans × 32 steps):**
+
+| class | metric | n | min | p50 | p90 | p99 | max |
+|---|---|---|---|---|---|---|---|
+| noise (affected==0) | maxNorm | 458 | 1.57e-5 | 0.0198 | 0.0198 | 0.0202 | **0.5366** |
+| noise | sumNorm | 458 | 1.57e-5 | 0.0594 | 0.1385 | 0.1781 | **3.3866** |
+| divergence (affected≥1) | maxNorm | 22 | **0.3106** | 0.6452 | 3.9921 | 4.3078 | 4.3078 |
+| divergence | sumNorm | 22 | 2.5722 | 4.0263 | 38.364 | 46.960 | 46.960 |
+
+**Findings for adjudication (no code changed):**
+1. **Sum degeneracy confirmed on live data** (matches the 2026-08-03 static audit): sum-norm reaches **3.39 on steps with zero affected bodies** — the current score half fires above `SceneScoreThreshold=1` on pure sub-threshold background, the AND-gate's second half is the only thing containing it.
+2. **Max-norm classes OVERLAP around 1.0:** noise max 0.537 vs divergence min 0.311 — with `max` + threshold 1.0 roughly half of affected steps (p50 = 0.645) would FAIL the score half, i.e. the re-ratified threshold cannot stay at 1 without changing which steps qualify; candidate range for separation lies below ~0.3 (with the transient-burst caveat below) — a number to ratify over this data, not to pick silently.
+3. **Sub-threshold transient bursts recorded:** X-axis fans at 0.8×/0.9× (eps 15.9/17.9 µm) transiently reach **22 affected bodies** (peakMaxNorm 2.78 / 1.35) yet stay non-significant (not sustained 5 steps within the 32-step window) — near-threshold tower dynamics are marginal, and the 32-step window cuts sustained checks close (first frame 27 + 5 = 32 exactly).
+4. Y/Z-axis fans stay fully quiet (peakAffected=0) — the tower discriminates axes cleanly at these ε.
+
 ### 2026-08-03 — Block 2.2.1: A1 review fix — shortest round-trip mm display (`feat/block-2.2.1`)
 
 **Review decision (human):** A1 accepted, deviations 1–3 approved; deviation 4 (full-"R" mm display of window overrides) REJECTED — the input field must show the shortest plain round-trip representation of the stored value ("0.0001", never "0.000100000005"); storage/manifest/evidence keep full precision. Display-only fix in `GhostSearchEntryResolver.MillimetresTextFromMetres` (G1…G17 ascending, plain notation only, first text that parses back bit-equal; "R" fallback); storage and resolver untouched. New test `DisplayShowsShortestRoundTripTextForNonExactFloats` (typed→display equality for 0.0001 / 0.002 / 0.1234 / 7.3 / 10 / 0.01 + display→stored bit-equality).
