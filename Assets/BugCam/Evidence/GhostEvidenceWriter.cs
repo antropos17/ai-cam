@@ -815,6 +815,7 @@ namespace BugCam.Evidence
             WriteString(sb, "runDirectory", runDir.Replace('\\', '/'));
 
             AppendPhysicsSnapshot(sb, document.Environment);
+            AppendSettingsSource(sb, document.SettingsSource);
 
             sb.Append(",\"artifacts\":[");
             AppendArtifact(sb, GhostEvidenceSchema.MetricsFileName, "metrics", true, true);
@@ -889,6 +890,30 @@ namespace BugCam.Evidence
             WriteBool(sb, "baselineRunWritten", hasBaseline);
             sb.Append('}');
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// Block 2.2.1 A1 settings provenance: source kind, asset identity, override flags
+        /// and effective epsilon bounds (full "R" precision). captured=false is honest for
+        /// pre-parameterization callers — never fabricate a source.
+        /// </summary>
+        private static void AppendSettingsSource(StringBuilder sb, GhostSettingsProvenance source)
+        {
+            sb.Append(",\"settingsSource\":{");
+            WriteBool(sb, "captured", source.Captured, true);
+            if (source.Captured)
+            {
+                WriteString(sb, "sourceKind", source.SourceKind);
+                WriteString(sb, "description", source.Description);
+                WriteString(sb, "assetName", source.AssetName);
+                WriteString(sb, "assetGuid", source.AssetGuid);
+                WriteBool(sb, "floorOverridden", source.FloorOverridden);
+                WriteBool(sb, "ceilingOverridden", source.CeilingOverridden);
+                WriteFloat(sb, "effectiveFloorMetres", source.EffectiveFloorMetres);
+                WriteFloat(sb, "effectiveCeilingMetres", source.EffectiveCeilingMetres);
+            }
+
+            sb.Append('}');
         }
 
         /// <summary>

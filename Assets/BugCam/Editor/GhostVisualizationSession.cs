@@ -177,7 +177,7 @@ namespace BugCam.Editor
                 return;
             }
 
-            GhostSceneViewDrawer.Draw(_document.DrawSet, _showBaseline, _showFans);
+            GhostSceneViewDrawer.Draw(_document.DrawSet, _showBaseline, _showFans, sceneView);
         }
 
         private static void FramePoint(Vector3 point, float size)

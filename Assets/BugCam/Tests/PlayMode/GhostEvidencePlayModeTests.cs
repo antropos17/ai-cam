@@ -62,6 +62,8 @@ namespace BugCam.Tests
                     scales[i] = 1f;
                 }
 
+                var provenanceType = Type.GetType(
+                    "BugCam.Evidence.GhostSettingsProvenance, BugCam.Evidence");
                 var build = builderType.GetMethod(
                     "Build",
                     new[]
@@ -71,7 +73,8 @@ namespace BugCam.Tests
                         settingsType,
                         typeof(float[]),
                         typeof(string),
-                        envType
+                        envType,
+                        provenanceType
                     }).Invoke(
                     null,
                     new object[]
@@ -81,7 +84,8 @@ namespace BugCam.Tests
                         settings,
                         scales,
                         "playmode-smoke-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss"),
-                        environment
+                        environment,
+                        Activator.CreateInstance(provenanceType)
                     });
 
                 Assert.That(Prop<bool>(build, "Succeeded"), Is.True, Prop<string>(build, "ErrorReason"));

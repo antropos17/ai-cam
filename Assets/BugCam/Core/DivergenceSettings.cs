@@ -85,7 +85,9 @@ namespace BugCam.Core
         public const float DefaultEpsilonStart = 1e-5f;
 
         // 2. Why: docs/PLAN.md Block 1.4 fixes the exponential multiplier at x2, which reaches
-        // the 10 mm ceiling from 0.01 mm in 10 steps.
+        // the 10 mm ceiling from 0.01 mm in 10 steps. Read ONLY by the Exponential-refinement
+        // phase (the cursor is multiplied/divided by this factor per probe); the ladder phase
+        // never uses this field.
         public const float DefaultEpsilonGrowthFactor = 2f;
 
         // 1e-2 m (10 mm). Why: docs/PLAN.md Block 1.4 fixes the upper bound of the tested
@@ -98,7 +100,28 @@ namespace BugCam.Core
 
         // 12. Why: docs/PLAN.md Block 1.4 fixes a 12-point log-uniform ladder from 0.01 mm to
         // 10 mm, run before bisection is trusted, so non-monotonicity shows up as data.
+        // The ladder interpolates [EpsilonStart, EpsilonCeiling] with its own log-uniform step
+        // ((ceiling/start)^(1/(count-1))) and does not read EpsilonGrowthFactor; the two
+        // progressions coincide only when ceiling/start = factor^(count-1).
         public const int DefaultLadderPointCount = 12;
+
+        // ---------------------------------------------------------------------------------
+        // Block 2.2.1 A1 — search-entry validation bounds (docs/CONTRACT-2.2.1.md table)
+        // ---------------------------------------------------------------------------------
+
+        // 1e-6 m. Why: the Block 1.1 repeatability gate — below it a perturbation is
+        // indistinguishable from measurement noise, so a search floor under this bound
+        // cannot produce an honest threshold.
+        public const float MinSearchEpsilonFloorMetres = 1e-6f;
+
+        // 1 m. Why: a perturbation larger than 1 m is not "small" — the product measures
+        // sensitivity to small input changes, not gross scene rearrangement.
+        public const float MaxSearchEpsilonCeilingMetres = 1f;
+
+        // 1.001. Why: below this ceiling/floor ratio the range is degenerate for the
+        // required 12-point log-uniform ladder (per-point step becomes numerically
+        // meaningless).
+        public const float MinSearchCeilingToFloorRatio = 1.001f;
 
         // ---------------------------------------------------------------------------------
         // Blocks 1.5 / 2.1 — evidence

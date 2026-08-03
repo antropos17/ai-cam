@@ -647,20 +647,16 @@ namespace BugCam.Tests
             SessionState.SetBool(busyKey, true);
             try
             {
-                var strategyType = Type.GetType("BugCam.Core.EpsilonSearchStrategy, BugCam.Core");
-                var strategy = Enum.ToObject(strategyType, 0);
                 var args = new object[]
                 {
-                    32,
-                    strategy,
-                    Vector3.right,
+                    TowerEntry(32),
                     "test",
                     null
                 };
                 var accepted = (bool)tryStart.Invoke(null, args);
                 Assert.That(accepted, Is.False, "Busy Host must reject concurrent TryStart.");
-                Assert.That(args[4], Is.InstanceOf<string>());
-                Assert.That((string)args[4], Does.Contain("already pending or running"));
+                Assert.That(args[2], Is.InstanceOf<string>());
+                Assert.That((string)args[2], Does.Contain("already pending or running"));
                 Assert.That(SessionState.GetBool(busyKey, false), Is.True);
             }
             finally
@@ -762,13 +758,9 @@ namespace BugCam.Tests
                     "Repeated cleanup must not emit another SearchCompleted.");
 
                 allowPlayModeEntry.SetValue(null, false);
-                var strategyType = Type.GetType("BugCam.Core.EpsilonSearchStrategy, BugCam.Core");
-                var strategy = Enum.ToObject(strategyType, 0);
                 var args = new object[]
                 {
-                    32,
-                    strategy,
-                    Vector3.right,
+                    TowerEntry(32),
                     "interrupt-regression",
                     null
                 };
@@ -777,7 +769,7 @@ namespace BugCam.Tests
                     accepted,
                     Is.True,
                     "After interrupt cleanup, TryStartTowerSearch must accept.");
-                Assert.That(args[4], Is.Null);
+                Assert.That(args[2], Is.Null);
                 Assert.That(
                     SessionState.GetBool(busyKey, false),
                     Is.True,
@@ -791,6 +783,18 @@ namespace BugCam.Tests
                 SessionState.SetBool(busyKey, false);
                 SessionState.SetBool(pendingKey, false);
             }
+        }
+
+        /// <summary>A1 default tower entry via reflection (projectile, no asset, no overrides).</summary>
+        private static object TowerEntry(int stepCount)
+        {
+            var entryType = Type.GetType("BugCam.Editor.GhostSearchEntry, BugCam.Editor");
+            Assert.That(entryType, Is.Not.Null, "GhostSearchEntry must exist (A1 search entry).");
+            var tower = entryType.GetMethod("Tower", BindingFlags.Public | BindingFlags.Static);
+            Assert.That(tower, Is.Not.Null, "GhostSearchEntry.Tower factory must exist.");
+            var strategyType = Type.GetType("BugCam.Core.EpsilonSearchStrategy, BugCam.Core");
+            var strategy = Enum.ToObject(strategyType, 0);
+            return tower.Invoke(null, new object[] { stepCount, strategy, Vector3.right });
         }
 
         private sealed class InterruptCompletionHolder
@@ -1009,6 +1013,10 @@ namespace BugCam.Tests
                 "test-branch",
                 "Assets/TestScene.unity");
 
+            var provenanceType = Type.GetType(
+                "BugCam.Evidence.GhostSettingsProvenance, BugCam.Evidence");
+            Assert.That(provenanceType, Is.Not.Null);
+
             try
             {
                 var build = builderType.GetMethod(
@@ -1020,10 +1028,20 @@ namespace BugCam.Tests
                         settingsType,
                         typeof(float[]),
                         typeof(string),
-                        envType
+                        envType,
+                        provenanceType
                     }).Invoke(
                     null,
-                    new object[] { searchResult, identity, settings, null, runId, environment });
+                    new object[]
+                    {
+                        searchResult,
+                        identity,
+                        settings,
+                        null,
+                        runId,
+                        environment,
+                        Activator.CreateInstance(provenanceType)
+                    });
 
                 Assert.That(Prop<bool>(build, "Succeeded"), Is.True, Prop<string>(build, "ErrorReason"));
                 return Prop<object>(build, "Document");
@@ -1052,6 +1070,8 @@ namespace BugCam.Tests
                 "test-branch",
                 "Assets/TestScene.unity");
 
+            var provenanceType = Type.GetType(
+                "BugCam.Evidence.GhostSettingsProvenance, BugCam.Evidence");
             return builderType.GetMethod(
                     "CreateFailureDocument",
                     BindingFlags.Public | BindingFlags.Static)
@@ -1065,7 +1085,8 @@ namespace BugCam.Tests
                         errorReason,
                         10,
                         "build-failed-run",
-                        environment
+                        environment,
+                        Activator.CreateInstance(provenanceType)
                     });
         }
 

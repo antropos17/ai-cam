@@ -32,6 +32,15 @@ namespace BugCam.Editor
         private const string TutorialHiddenKey = "BugCam.GhostWindow.TutorialHidden";
         private const string SetupCollapsedKey = "BugCam.GhostWindow.SetupCollapsed";
 
+        // A1 entry persistence (docs/CONTRACT-2.2.1.md): SessionState, asset by GUID,
+        // epsilon overrides as canonical full-precision metres.
+        private const string AssetGuidKey = "BugCam.GhostWindow.SettingsAssetGuid";
+        private const string HasFloorOverrideKey = "BugCam.GhostWindow.HasFloorOverride";
+        private const string FloorOverrideKey = "BugCam.GhostWindow.FloorOverrideMetres";
+        private const string HasCeilingOverrideKey = "BugCam.GhostWindow.HasCeilingOverride";
+        private const string CeilingOverrideKey = "BugCam.GhostWindow.CeilingOverrideMetres";
+        private const string TargetBodyIdKey = "BugCam.GhostWindow.TargetBodyId";
+
         private enum WindowState
         {
             Idle,
@@ -60,10 +69,17 @@ namespace BugCam.Editor
         private static readonly GUIContent RunButtonContent = new GUIContent("Запустить поиск");
         private static readonly GUIContent InterruptContent = new GUIContent("Прервать");
         private static readonly GUIContent InterruptingContent = new GUIContent("Прерывание…");
-        private static readonly GUIContent TargetLabel =
-            new GUIContent("Цель", "Открытая сцена не используется.");
-        private static readonly GUIContent TargetValue =
-            new GUIContent("процедурная TowerScene (создаётся BugCam) — снаряд, body 49");
+        private static readonly GUIContent TargetLabel = new GUIContent(
+            "Цель",
+            "Возмущаемое тело процедурной TowerScene (открытая сцена не используется). " +
+            "Список приходит из display-name provider'а.");
+        private static readonly GUIContent AssetLabel = new GUIContent(
+            "Ассет настроек",
+            "DivergenceSettings-ассет как источник настроек поиска; пусто = дефолты кода. " +
+            "Хранится по GUID (SessionState).");
+        private static readonly GUIContent ResetToSourceContent = new GUIContent(
+            "Сбросить к источнику",
+            "Убрать правки окна — вернуть ε-диапазон к значениям ассета или дефолтов.");
         private static readonly GUIContent AxisLabel = new GUIContent(
             "Ось",
             "Единичный вектор. Направление начального смещения снаряда при возмущении.");
@@ -73,9 +89,9 @@ namespace BugCam.Editor
             "AscendFromCustomStart — вверх от заданного старта; DescendFromCeiling — " +
             "вниз от потолка. Диапазон не меняет.");
         private static readonly GUIContent RangeLabel = new GUIContent(
-            "Диапазон ε",
-            "Метры. Пределы поиска возмущения: floor … ceiling из DivergenceSettings.");
-        private static readonly GUIContent RangeValueContent = new GUIContent();
+            "Диапазон ε, мм",
+            "Ввод в миллиметрах (invariant culture, разделитель — точка); хранение в метрах " +
+            "полной точности. Приоритет: правка окна > ассет > дефолты.");
         private static readonly GUIContent[] AxisOptions =
         {
             new GUIContent("X"),
@@ -172,8 +188,28 @@ namespace BugCam.Editor
         private string _rangeText = string.Empty;
         private string _priorRunLabel = string.Empty;
         private GUIContent _stepsLabel;
-        private float _epsFloorMetres;
-        private float _epsCeilingMetres;
+
+        // --- A1 search entry state (canonical store = SessionState; fields mirror it) ---
+        [NonSerialized] private DivergenceSettings _settingsAsset;
+        private string _settingsAssetGuid = string.Empty;
+        private bool _hasFloorOverride;
+        private float _floorOverrideMetres;
+        private bool _hasCeilingOverride;
+        private float _ceilingOverrideMetres;
+        private int _targetBodyId;
+        private int _targetIndex;
+        private GhostSearchTargetOption[] _targetOptions;
+        private GUIContent[] _targetOptionContents;
+        // Edit buffers: committed via DelayedTextField; invalid text is kept on screen
+        // with the field's verbatim reason (fail-closed, no silent revert).
+        private string _floorText = string.Empty;
+        private string _ceilingText = string.Empty;
+        private bool _floorTextInvalid;
+        private bool _ceilingTextInvalid;
+        // Asset-drift watch: cheap per-frame float compares, re-resolve only on change.
+        private float _assetFloorSeen;
+        private float _assetCeilingSeen;
+        [NonSerialized] private GhostSearchEntryResolution _resolution;
 
         [MenuItem("BugCam/Ghost Visualization")]
         public static void Open()
@@ -190,12 +226,12 @@ namespace BugCam.Editor
             _tutorialHidden = EditorPrefs.GetBool(TutorialHiddenKey, false);
             _setupExpanded = !EditorPrefs.GetBool(SetupCollapsedKey, false);
 
-            CacheSearchRange();
+            LoadEntryState();
             _readyStatus = "Готово к поиску: " +
                 BugCam.Core.TowerProbeRequestFactory.ExpectedBodyCount.ToString(CultureInfo.InvariantCulture) +
                 " тел";
             RebuildStepsTooltip();
-            RebuildSetupSummary();
+            RefreshEntry();
             RefreshEvidenceDirState();
 
             var session = GhostVisualizationSession.Ensure();
@@ -221,6 +257,8 @@ namespace BugCam.Editor
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
             UnityEditor.Compilation.CompilationPipeline.compilationStarted += OnCompilationEvent;
             UnityEditor.Compilation.CompilationPipeline.compilationFinished += OnCompilationEvent;
+            // Asset deletion/move must re-validate the entry (fail-closed asset row).
+            EditorApplication.projectChanged += OnProjectChanged;
         }
 
         private void OnDisable()
@@ -230,7 +268,14 @@ namespace BugCam.Editor
             EditorApplication.playModeStateChanged -= OnPlayModeStateChanged;
             UnityEditor.Compilation.CompilationPipeline.compilationStarted -= OnCompilationEvent;
             UnityEditor.Compilation.CompilationPipeline.compilationFinished -= OnCompilationEvent;
+            EditorApplication.projectChanged -= OnProjectChanged;
             // Session survives window close for Scene View; do not dispose here.
+        }
+
+        private void OnProjectChanged()
+        {
+            RefreshEntry();
+            Repaint();
         }
 
         // --- State machine (single source of truth) ---
@@ -384,43 +429,265 @@ namespace BugCam.Editor
                 return;
             }
 
+            if (_resolution == null)
+            {
+                RefreshEntry();
+            }
+
+            WatchAssetDrift();
+
             using (new EditorGUI.DisabledScope(state == WindowState.Idle))
             {
                 EditorGUI.indentLevel++;
-                EditorGUILayout.LabelField(TargetLabel, TargetValue);
+
+                EditorGUI.BeginChangeCheck();
+                var newAsset = (DivergenceSettings)EditorGUILayout.ObjectField(
+                    AssetLabel,
+                    _settingsAsset,
+                    typeof(DivergenceSettings),
+                    false);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    ApplyAssetSelection(newAsset);
+                }
+
+                DrawFieldReason(_resolution.AssetReason);
+
+                EditorGUI.BeginChangeCheck();
+                _targetIndex = EditorGUILayout.Popup(TargetLabel, _targetIndex, _targetOptionContents);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    _targetBodyId = _targetOptions[_targetIndex].BodyId;
+                    SessionState.SetInt(TargetBodyIdKey, _targetBodyId);
+                    RefreshEntry();
+                }
+
+                DrawFieldReason(_resolution.TargetReason);
 
                 EditorGUI.BeginChangeCheck();
                 _axisIndex = EditorGUILayout.Popup(AxisLabel, _axisIndex, AxisOptions);
                 _strategy = (EpsilonSearchStrategy)EditorGUILayout.EnumPopup(StrategyLabel, _strategy);
                 _stepCount = EditorGUILayout.IntField(_stepsLabel, _stepCount);
-                if (_stepCount <= 0)
-                {
-                    _stepCount = DefaultRunStepCount;
-                }
-
                 if (EditorGUI.EndChangeCheck())
                 {
+                    // No silent reset to a default step count (contract table): an invalid
+                    // value stays on screen, the reason renders, the button disables.
                     RebuildStepsTooltip();
-                    RebuildSetupSummary();
+                    RefreshEntry();
                 }
 
-                RangeValueContent.text = _rangeText;
-                EditorGUILayout.LabelField(RangeLabel, RangeValueContent);
+                DrawFieldReason(_resolution.StepsReason);
+
+                DrawRangeRow();
+                DrawFieldReason(_floorTextInvalid
+                    ? GhostSearchEntryResolver.ReasonFloor
+                    : _resolution.FloorReason);
+                DrawFieldReason(_ceilingTextInvalid
+                    ? GhostSearchEntryResolver.ReasonCeiling
+                    : _resolution.CeilingReason);
+                DrawFieldReason(_resolution.RatioReason);
+
+                EditorGUILayout.LabelField(
+                    "Источник: " + _resolution.SourceDescription,
+                    _reasonStyle);
+
                 EditorGUI.indentLevel--;
             }
 
             EditorGUILayout.Space(2f);
         }
 
+        private void DrawRangeRow()
+        {
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.PrefixLabel(RangeLabel);
+
+            var newFloorText = EditorGUILayout.DelayedTextField(_floorText);
+            GUILayout.Label("…", GUILayout.Width(16f));
+            var newCeilingText = EditorGUILayout.DelayedTextField(_ceilingText);
+
+            using (new EditorGUI.DisabledScope(!_hasFloorOverride && !_hasCeilingOverride))
+            {
+                if (GUILayout.Button(ResetToSourceContent, GUILayout.Width(150f)))
+                {
+                    _hasFloorOverride = false;
+                    _hasCeilingOverride = false;
+                    _floorTextInvalid = false;
+                    _ceilingTextInvalid = false;
+                    SessionState.SetBool(HasFloorOverrideKey, false);
+                    SessionState.SetBool(HasCeilingOverrideKey, false);
+                    RefreshEntry();
+                }
+            }
+
+            EditorGUILayout.EndHorizontal();
+
+            if (!string.Equals(newFloorText, _floorText, StringComparison.Ordinal))
+            {
+                CommitRangeField(
+                    newFloorText,
+                    isFloor: true);
+            }
+
+            if (!string.Equals(newCeilingText, _ceilingText, StringComparison.Ordinal))
+            {
+                CommitRangeField(
+                    newCeilingText,
+                    isFloor: false);
+            }
+        }
+
+        /// <summary>
+        /// Commit one ε bound typed in millimetres. Unparseable input keeps the raw text
+        /// and reports the field's verbatim table reason — never a silent revert. A parsed
+        /// value equal to the current source value clears the override instead of pinning
+        /// it (an explicit no-op edit is not a window override).
+        /// </summary>
+        private void CommitRangeField(string text, bool isFloor)
+        {
+            if (isFloor)
+            {
+                _floorText = text;
+            }
+            else
+            {
+                _ceilingText = text;
+            }
+
+            if (!GhostSearchEntryResolver.TryParseMillimetresToMetres(text, out var metres))
+            {
+                if (isFloor)
+                {
+                    _floorTextInvalid = true;
+                }
+                else
+                {
+                    _ceilingTextInvalid = true;
+                }
+
+                Repaint();
+                return;
+            }
+
+            var sourceValue = isFloor ? SourceFloorMetres() : SourceCeilingMetres();
+            var isOverride = metres != sourceValue;
+            if (isFloor)
+            {
+                _floorTextInvalid = false;
+                _hasFloorOverride = isOverride;
+                _floorOverrideMetres = metres;
+                SessionState.SetBool(HasFloorOverrideKey, isOverride);
+                SessionState.SetFloat(FloorOverrideKey, metres);
+            }
+            else
+            {
+                _ceilingTextInvalid = false;
+                _hasCeilingOverride = isOverride;
+                _ceilingOverrideMetres = metres;
+                SessionState.SetBool(HasCeilingOverrideKey, isOverride);
+                SessionState.SetFloat(CeilingOverrideKey, metres);
+            }
+
+            RefreshEntry();
+        }
+
+        private float SourceFloorMetres()
+        {
+            return _settingsAsset != null
+                ? _settingsAsset.EpsilonStart
+                : DivergenceSettings.DefaultEpsilonStart;
+        }
+
+        private float SourceCeilingMetres()
+        {
+            return _settingsAsset != null
+                ? _settingsAsset.EpsilonCeiling
+                : DivergenceSettings.DefaultEpsilonCeiling;
+        }
+
+        private void DrawFieldReason(string reason)
+        {
+            if (!string.IsNullOrEmpty(reason))
+            {
+                EditorGUILayout.LabelField("⚠ " + reason, _reasonStyle);
+            }
+        }
+
+        /// <summary>
+        /// External edits to the assigned asset (Inspector) must re-validate and refresh
+        /// non-overridden field texts. Two float reads per frame, re-resolve only on change;
+        /// a destroyed asset reference re-resolves into the fail-closed asset row.
+        /// </summary>
+        private void WatchAssetDrift()
+        {
+            if (string.IsNullOrEmpty(_settingsAssetGuid))
+            {
+                return;
+            }
+
+            if (_settingsAsset == null)
+            {
+                if (_resolution != null && _resolution.AssetReason.Length == 0)
+                {
+                    RefreshEntry();
+                }
+
+                return;
+            }
+
+            if (_settingsAsset.EpsilonStart != _assetFloorSeen ||
+                _settingsAsset.EpsilonCeiling != _assetCeilingSeen)
+            {
+                RefreshEntry();
+            }
+        }
+
+        private void ApplyAssetSelection(DivergenceSettings newAsset)
+        {
+            if (newAsset == null)
+            {
+                _settingsAsset = null;
+                _settingsAssetGuid = string.Empty;
+            }
+            else
+            {
+                var path = AssetDatabase.GetAssetPath(newAsset);
+                var guid = AssetDatabase.AssetPathToGUID(path);
+                if (string.IsNullOrEmpty(guid))
+                {
+                    // Not a persisted asset (e.g. a runtime instance) — cannot travel by
+                    // GUID through the Play Mode reload; refuse instead of half-working.
+                    Debug.LogWarning(
+                        "BugCam: настройки должны быть ассетом проекта (GUID); " +
+                        "runtime-экземпляр не принят.");
+                    return;
+                }
+
+                _settingsAsset = newAsset;
+                _settingsAssetGuid = guid;
+            }
+
+            SessionState.SetString(AssetGuidKey, _settingsAssetGuid);
+            RefreshEntry();
+        }
+
         private void DrawMainButton(WindowState state)
         {
-            var runnable = state == WindowState.Ready || state == WindowState.Done;
+            var entryValid = IsEntryValid();
+            var runnable = (state == WindowState.Ready || state == WindowState.Done) && entryValid;
             using (new EditorGUI.DisabledScope(!runnable))
             {
                 if (GUILayout.Button(RunButtonContent, GUILayout.Height(32f)))
                 {
                     StartSearch();
                 }
+            }
+
+            if ((state == WindowState.Ready || state == WindowState.Done) && !entryValid)
+            {
+                EditorGUILayout.LabelField(
+                    "Причина: параметры невалидны — " + FirstEntryReason(),
+                    _reasonStyle);
             }
 
             if (state == WindowState.Searching)
@@ -626,10 +893,17 @@ namespace BugCam.Editor
 
         private void StartSearch()
         {
+            // Authoritative re-validation at click time (the button gate is UI state and
+            // may be one event stale — the host rejects too, fail-closed all the way).
+            RefreshEntry();
+            if (!IsEntryValid())
+            {
+                Repaint();
+                return;
+            }
+
             if (!GhostEvidencePlayModeHost.TryStartTowerSearch(
-                    _stepCount,
-                    _strategy,
-                    AxisVectors[_axisIndex],
+                    BuildEntry(),
                     GhostEvidencePlayModeHost.SourceWindow,
                     out var rejectReason))
             {
@@ -818,6 +1092,7 @@ namespace BugCam.Editor
                     rows.Add(new ResultRow("Ошибка", document.ErrorCode + ": " + document.ErrorReason));
                 }
 
+                AddSettingsSourceRows(rows, document);
                 _resultRows = rows.ToArray();
                 return;
             }
@@ -900,7 +1175,29 @@ namespace BugCam.Editor
                     " — полный список в уликах"));
             }
 
+            AddSettingsSourceRows(rows, document);
             _resultRows = rows.ToArray();
+        }
+
+        /// <summary>
+        /// A1 contract: the settings source and the effective epsilon bounds belong to the
+        /// result, not only to the manifest. Captured=false (pre-A1 document) adds no rows —
+        /// never fabricate a source.
+        /// </summary>
+        private static void AddSettingsSourceRows(
+            System.Collections.Generic.List<ResultRow> rows,
+            GhostEvidenceDocument document)
+        {
+            var source = document.SettingsSource;
+            if (!source.Captured)
+            {
+                return;
+            }
+
+            rows.Add(new ResultRow("Источник настроек", source.Description));
+            rows.Add(new ResultRow(
+                "Диапазон ε (эффективный)",
+                FormatRange(source.EffectiveFloorMetres, source.EffectiveCeilingMetres)));
         }
 
         private static string MeaningFor(EpsilonSearchVerdictKind kind)
@@ -924,21 +1221,121 @@ namespace BugCam.Editor
             }
         }
 
-        private void CacheSearchRange()
+        /// <summary>Restore the A1 entry from SessionState (asset by GUID) on enable.</summary>
+        private void LoadEntryState()
         {
-            var settings = DivergenceSettings.CreateDefault();
-            try
+            _settingsAssetGuid = SessionState.GetString(AssetGuidKey, string.Empty);
+            _settingsAsset = null;
+            if (!string.IsNullOrEmpty(_settingsAssetGuid))
             {
-                var searchSettings = settings.ToSearchSettings();
-                _epsFloorMetres = searchSettings.EpsilonStartMetres;
-                _epsCeilingMetres = searchSettings.EpsilonCeilingMetres;
-            }
-            finally
-            {
-                UnityEngine.Object.DestroyImmediate(settings);
+                var path = AssetDatabase.GUIDToAssetPath(_settingsAssetGuid);
+                if (!string.IsNullOrEmpty(path))
+                {
+                    _settingsAsset = AssetDatabase.LoadAssetAtPath<DivergenceSettings>(path);
+                }
             }
 
-            _rangeText = FormatRange(_epsFloorMetres, _epsCeilingMetres);
+            _hasFloorOverride = SessionState.GetBool(HasFloorOverrideKey, false);
+            _floorOverrideMetres = SessionState.GetFloat(FloorOverrideKey, 0f);
+            _hasCeilingOverride = SessionState.GetBool(HasCeilingOverrideKey, false);
+            _ceilingOverrideMetres = SessionState.GetFloat(CeilingOverrideKey, 0f);
+            _targetBodyId = SessionState.GetInt(
+                TargetBodyIdKey,
+                GhostSearchTargetCatalog.TowerDefaultTargetBodyId);
+
+            _targetOptions = GhostSearchTargetCatalog.TowerOptions();
+            _targetOptionContents = new GUIContent[_targetOptions.Length];
+            _targetIndex = 0;
+            for (var i = 0; i < _targetOptions.Length; i++)
+            {
+                _targetOptionContents[i] = new GUIContent(_targetOptions[i].DisplayName);
+                if (_targetOptions[i].BodyId == _targetBodyId)
+                {
+                    _targetIndex = i;
+                }
+            }
+        }
+
+        private GhostSearchEntry BuildEntry()
+        {
+            return new GhostSearchEntry(
+                _stepCount,
+                _strategy,
+                AxisVectors[_axisIndex],
+                _targetBodyId,
+                _settingsAssetGuid,
+                _hasFloorOverride,
+                _floorOverrideMetres,
+                _hasCeilingOverride,
+                _ceilingOverrideMetres);
+        }
+
+        /// <summary>
+        /// Re-resolve the entry (single settings path), refresh the effective-range texts
+        /// for bounds without an active override or a pending invalid edit, and rebuild
+        /// the cached summary strings. Event-time only — never per frame.
+        /// </summary>
+        private void RefreshEntry()
+        {
+            _resolution = GhostSearchEntryResolver.Resolve(BuildEntry());
+            _assetFloorSeen = _settingsAsset != null ? _settingsAsset.EpsilonStart : 0f;
+            _assetCeilingSeen = _settingsAsset != null ? _settingsAsset.EpsilonCeiling : 0f;
+
+            if (!_floorTextInvalid)
+            {
+                _floorText = GhostSearchEntryResolver.MillimetresTextFromMetres(
+                    _resolution.EffectiveFloorMetres);
+            }
+
+            if (!_ceilingTextInvalid)
+            {
+                _ceilingText = GhostSearchEntryResolver.MillimetresTextFromMetres(
+                    _resolution.EffectiveCeilingMetres);
+            }
+
+            _rangeText = FormatRange(
+                _resolution.EffectiveFloorMetres,
+                _resolution.EffectiveCeilingMetres);
+            RebuildSetupSummary();
+        }
+
+        private bool IsEntryValid()
+        {
+            return _resolution != null &&
+                   _resolution.IsValid &&
+                   !_floorTextInvalid &&
+                   !_ceilingTextInvalid;
+        }
+
+        /// <summary>First reason in table order, including pending invalid edit buffers.</summary>
+        private string FirstEntryReason()
+        {
+            if (_floorTextInvalid)
+            {
+                return GhostSearchEntryResolver.ReasonFloor;
+            }
+
+            if (_ceilingTextInvalid)
+            {
+                return GhostSearchEntryResolver.ReasonCeiling;
+            }
+
+            return _resolution != null ? _resolution.FirstReason : string.Empty;
+        }
+
+        private static string SourceShort(string sourceKind)
+        {
+            switch (sourceKind)
+            {
+                case "asset":
+                    return "ассет";
+                case "asset+window":
+                    return "ассет+правка";
+                case "defaults+window":
+                    return "дефолты+правка";
+                default:
+                    return "дефолты";
+            }
         }
 
         private void RebuildStepsTooltip()
@@ -957,9 +1354,12 @@ namespace BugCam.Editor
         private void RebuildSetupSummary()
         {
             _sb.Clear();
-            _sb.Append("Настройка   (").Append(AxisOptions[_axisIndex].text);
+            _sb.Append("Настройка   (b").Append(_targetBodyId);
+            _sb.Append(", ").Append(AxisOptions[_axisIndex].text);
             _sb.Append(", ").Append(_strategy);
-            _sb.Append(", ").Append(_stepCount).Append(" шагов, ε ").Append(_rangeText).Append(')');
+            _sb.Append(", ").Append(_stepCount).Append(" шагов, ε ").Append(_rangeText);
+            _sb.Append(", ").Append(SourceShort(_resolution != null ? _resolution.SourceKind : "defaults"));
+            _sb.Append(')');
             _setupSummary = _sb.ToString();
         }
 

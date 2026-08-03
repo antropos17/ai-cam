@@ -95,5 +95,12 @@ namespace BugCam.Evidence
         public const string BuildFailed = "BUILD_FAILED";
 
         public const string WriteFailed = "WRITE_FAILED";
+
+        /// <summary>
+        /// Block 2.2.1 A1: the persisted search entry could not be resolved into settings
+        /// (e.g. the assigned DivergenceSettings asset vanished before the run) — the run
+        /// fails closed instead of silently falling back to defaults.
+        /// </summary>
+        public const string SettingsResolveFailed = "SETTINGS_RESOLVE_FAILED";
     }
 }

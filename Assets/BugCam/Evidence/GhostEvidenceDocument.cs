@@ -28,6 +28,58 @@ namespace BugCam.Evidence
     }
 
     /// <summary>
+    /// Block 2.2.1 A1 settings provenance: where the effective search settings came from
+    /// (window override &gt; asset &gt; defaults) and the effective epsilon bounds, recorded
+    /// in the manifest and the window result. <c>default</c> (Captured=false) means the
+    /// caller predates parameterization — the writer emits an honest captured=false.
+    /// </summary>
+    public readonly struct GhostSettingsProvenance
+    {
+        public GhostSettingsProvenance(
+            string sourceKind,
+            string description,
+            string assetName,
+            string assetGuid,
+            bool floorOverridden,
+            bool ceilingOverridden,
+            float effectiveFloorMetres,
+            float effectiveCeilingMetres)
+        {
+            Captured = true;
+            SourceKind = sourceKind ?? string.Empty;
+            Description = description ?? string.Empty;
+            AssetName = assetName ?? string.Empty;
+            AssetGuid = assetGuid ?? string.Empty;
+            FloorOverridden = floorOverridden;
+            CeilingOverridden = ceilingOverridden;
+            EffectiveFloorMetres = effectiveFloorMetres;
+            EffectiveCeilingMetres = effectiveCeilingMetres;
+        }
+
+        public bool Captured { get; }
+
+        /// <summary>"defaults" | "asset" | "defaults+window" | "asset+window".</summary>
+        public string SourceKind { get; }
+
+        /// <summary>Human-readable source line, verbatim what the window shows.</summary>
+        public string Description { get; }
+
+        public string AssetName { get; }
+
+        public string AssetGuid { get; }
+
+        public bool FloorOverridden { get; }
+
+        public bool CeilingOverridden { get; }
+
+        /// <summary>Metres, full precision.</summary>
+        public float EffectiveFloorMetres { get; }
+
+        /// <summary>Metres, full precision.</summary>
+        public float EffectiveCeilingMetres { get; }
+    }
+
+    /// <summary>
     /// Live physics-settings snapshot taken at evidence-build time from the running
     /// Unity instance — never sourced from BugCam constants. Runtime-readable values
     /// come from <c>Physics.*</c> / <c>Time.fixedDeltaTime</c>; editor-serialized values
@@ -302,7 +354,8 @@ namespace BugCam.Evidence
             bool success = true,
             string errorCode = null,
             string errorReason = null,
-            GhostRunEnvironment environment = default)
+            GhostRunEnvironment environment = default,
+            GhostSettingsProvenance settingsSource = default)
         {
             SchemaVersion = GhostEvidenceSchema.SchemaVersion;
             Kind = GhostEvidenceSchema.Kind;
@@ -321,6 +374,7 @@ namespace BugCam.Evidence
             ErrorCode = errorCode ?? GhostEvidenceErrorCodes.None;
             ErrorReason = errorReason ?? string.Empty;
             Environment = environment;
+            SettingsSource = settingsSource;
         }
 
         public int SchemaVersion { get; }
@@ -339,6 +393,9 @@ namespace BugCam.Evidence
         public string ErrorReason { get; }
 
         public GhostRunEnvironment Environment { get; }
+
+        /// <summary>A1 settings provenance; Captured=false for pre-A1 callers.</summary>
+        public GhostSettingsProvenance SettingsSource { get; }
 
         public EpsilonSearchResult SearchResult { get; }
 
