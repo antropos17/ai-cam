@@ -21,6 +21,7 @@ namespace BugCam.Editor
         private const string PendingKey = "BugCam.GhostHost.Pending";
         private const string BusyKey = "BugCam.GhostSearch.Busy";
         private const string SourceKey = "BugCam.GhostHost.Source";
+        private const string EnteredPlayModeKey = "BugCam.GhostHost.EnteredPlayMode";
         private const string InterruptedStatus =
             "Interrupted: Play Mode exited before search completed.";
 
@@ -35,6 +36,14 @@ namespace BugCam.Editor
 
         /// <summary>Raised on the main thread when a hosted search finishes (success or failure).</summary>
         public static event Action<GhostSearchCompletion> SearchCompleted;
+
+        /// <summary>
+        /// Raised on the main thread whenever the live search advances (phase / step /
+        /// epsilon change). Block 2.2: fed by the runner MonoBehaviour polling the Core
+        /// read-only progress accessors once per frame — the window repaints only on
+        /// these events, never on editor ticks. Real probe steps only, no synthesis.
+        /// </summary>
+        public static event Action<GhostSearchProgress> SearchProgress;
 
         static GhostEvidencePlayModeHost()
         {
@@ -100,6 +109,10 @@ namespace BugCam.Editor
                 SessionState.SetFloat("BugCam.GhostHost.AxisZ", searchAxis.z);
                 if (AllowPlayModeEntry)
                 {
+                    // Host-initiated Play Mode entry: remember it so completion can exit
+                    // the Play Mode the host itself started — and only that one. A search
+                    // launched inside a user-started Play Mode session never sets this.
+                    SessionState.SetBool(EnteredPlayModeKey, true);
                     EditorApplication.isPlaying = true;
                 }
 
@@ -117,6 +130,9 @@ namespace BugCam.Editor
             }
             else if (state == PlayModeStateChange.ExitingPlayMode)
             {
+                // Play Mode is ending regardless of who requested it — drop the marker so a
+                // stale flag can never auto-exit a future user-started play session.
+                SessionState.SetBool(EnteredPlayModeKey, false);
                 // Interrupted or abandoned run: clear Busy/Pending even if PendingKey
                 // was already cleared when the runner started (mid-run exit).
                 // Runner uses DontDestroyOnLoad + DontSave, so Play Mode exit alone
@@ -245,6 +261,27 @@ namespace BugCam.Editor
         }
 
         /// <summary>
+        /// Exit the Play Mode session the host itself started, once the completion has been
+        /// delivered. Must run AFTER Busy is cleared (Cleanup): the ExitingPlayMode handler
+        /// then sees Busy=false and cannot emit a false "Interrupted" completion. A search
+        /// that ran inside a user-started Play Mode session never set the marker, so the
+        /// user's session is left untouched.
+        /// </summary>
+        private static void ExitHostEnteredPlayMode()
+        {
+            if (!SessionState.GetBool(EnteredPlayModeKey, false))
+            {
+                return;
+            }
+
+            SessionState.SetBool(EnteredPlayModeKey, false);
+            if (EditorApplication.isPlaying)
+            {
+                EditorApplication.isPlaying = false;
+            }
+        }
+
+        /// <summary>
         /// Live physics snapshot for the evidence capsule. Runtime values always
         /// capture; editor-serialized values (threading mode, enhanced determinism)
         /// come from <see cref="PhysicsSettingsProbe"/> and degrade to honest
@@ -275,6 +312,12 @@ namespace BugCam.Editor
 
         private sealed class GhostEvidenceRunnerBehaviour : MonoBehaviour
         {
+            private EpsilonSearch _liveSearch;
+            private EpsilonSearchPhase _lastPhase = EpsilonSearchPhase.NotStarted;
+            private int _lastStep = -1;
+            private int _lastStepTotal = -1;
+            private float _lastEpsilonMetres = -1f;
+
             public void Begin(
                 int stepCount,
                 EpsilonSearchStrategy strategy,
@@ -284,8 +327,43 @@ namespace BugCam.Editor
                 StartCoroutine(Run(stepCount, strategy, axis, source));
             }
 
+            private void Update()
+            {
+                // Poll the Core read-only accessors; raise SearchProgress only on change.
+                // Field compares only — zero allocations on quiet frames.
+                var search = _liveSearch;
+                if (search == null)
+                {
+                    return;
+                }
+
+                var phase = search.Phase;
+                var step = search.CurrentPhaseStep;
+                var stepTotal = search.PhaseStepTotal;
+                var epsilon = search.CurrentEpsilonMetres;
+                if (phase == _lastPhase &&
+                    step == _lastStep &&
+                    stepTotal == _lastStepTotal &&
+                    epsilon == _lastEpsilonMetres)
+                {
+                    return;
+                }
+
+                _lastPhase = phase;
+                _lastStep = step;
+                _lastStepTotal = stepTotal;
+                _lastEpsilonMetres = epsilon;
+                NotifyProgress(new GhostSearchProgress(
+                    phase,
+                    step,
+                    stepTotal,
+                    epsilon,
+                    hasEpsilon: search.HasOutstandingProbe && phase != EpsilonSearchPhase.Baseline));
+            }
+
             private void OnDestroy()
             {
+                _liveSearch = null;
                 // Torn down by Host cleanup or domain reload — ensure Busy/Pending clear
                 // without emitting a second SearchCompleted (interrupt notify owns that).
                 if (IsSearchBusy)
@@ -310,6 +388,7 @@ namespace BugCam.Editor
                     identity.TargetBodyId,
                     identity.SearchAxis,
                     identity.Strategy);
+                _liveSearch = search;
                 var bodies = TowerProbeRequestFactory.CreateBaseline(stepCount).Bodies;
                 var scales = new float[bodies.Length];
                 for (var i = 0; i < bodies.Length; i++)
@@ -328,6 +407,7 @@ namespace BugCam.Editor
                     settings.ToThresholds(),
                     scales);
 
+                _liveSearch = null;
                 var searchResult = runner.LastResult;
                 Debug.Log(GhostEvidenceWriter.FormatHonestSearchReport(
                     searchResult,
@@ -377,6 +457,7 @@ namespace BugCam.Editor
                             false,
                             status));
                     Cleanup();
+                    ExitHostEnteredPlayMode();
                     yield break;
                 }
 
@@ -431,6 +512,7 @@ namespace BugCam.Editor
                         write.Succeeded,
                         status));
                 Cleanup();
+                ExitHostEnteredPlayMode();
             }
 
             private void Cleanup()
@@ -450,6 +532,52 @@ namespace BugCam.Editor
                 Debug.LogException(ex);
             }
         }
+
+        private static void NotifyProgress(GhostSearchProgress progress)
+        {
+            try
+            {
+                SearchProgress?.Invoke(progress);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogException(ex);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Live progress snapshot of the hosted search. Real probe state only —
+    /// phase and step come verbatim from the Core accessors, never synthesized.
+    /// </summary>
+    public readonly struct GhostSearchProgress
+    {
+        public GhostSearchProgress(
+            EpsilonSearchPhase phase,
+            int currentStep,
+            int stepTotal,
+            float epsilonMetres,
+            bool hasEpsilon)
+        {
+            Phase = phase;
+            CurrentStep = currentStep;
+            StepTotal = stepTotal;
+            EpsilonMetres = epsilonMetres;
+            HasEpsilon = hasEpsilon;
+        }
+
+        public EpsilonSearchPhase Phase { get; }
+
+        /// <summary>1-based probe number within the phase.</summary>
+        public int CurrentStep { get; }
+
+        /// <summary>Total probes in the phase, or -1 when honestly unknown (Exponential).</summary>
+        public int StepTotal { get; }
+
+        public float EpsilonMetres { get; }
+
+        /// <summary>False for baseline / between probes — epsilon row keeps its last value.</summary>
+        public bool HasEpsilon { get; }
     }
 
     /// <summary>Completion payload for the single Ghost search pipeline.</summary>
