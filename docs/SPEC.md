@@ -90,7 +90,7 @@ Tracked per physics step: position, rotation, linear velocity, angular velocity,
 
 Per-body normalized metrics: position error / object scale, rotation error / threshold, velocity error / threshold, contact mismatch*, state mismatch*. Scene Divergence Score = weighted sum over tracked bodies.
 
-Divergence is significant only when it: exceeds threshold AND persists several physics steps AND affects an important body or sufficient share of the scene. This filters numerical noise.
+Divergence is significant only when it: exceeds threshold AND persists several physics steps AND affects an important body or sufficient share of the scene*. This filters numerical noise. (* = the share-of-scene half of this gate is backlog beyond v0.1: the implementation uses a fixed ≥1-affected-body check per PLAN.md Block 1.3 — recorded 2026-08-03 in STATUS.md Known issues #2.)
 
 ## 6. Adaptive Epsilon Search
 

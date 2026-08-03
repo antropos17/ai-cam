@@ -31,7 +31,7 @@ Assets/BugCam/
 - All lengths inside Core are metres. Millimetres exist only at the display layer.
 
 ## Engineering rules
-- Every physics claim gets a verification harness before UI work: two identical runs must match within 1e-6 per component before any feature building on top. The gate is 1e-6; bitwise equality is measured and logged separately, never used as the gate.
+- Every physics claim gets a verification harness before UI work: two identical runs must match within 1e-6 per component before any feature building on top. The gate is 1e-6; bitwise equality is measured and logged separately, never used as the gate — the sole exception is `PLAN.md` Block 1.4 VERIFY (a), where a bit-identical identical-config repeat serves as a determinism regression test, not as a physics-claim gate (reconciled 2026-07-29).
 - Divergence is "significant" only if score > threshold AND sustained ≥ 5 consecutive physics steps AND ≥ 1 tracked body exceeds `DivergenceSettings.PerBodyPositionThreshold` (a number, not a judgement). Never report one-frame noise.
 - If identical runs do NOT match: recreate the entire PhysicsScene per run with identical instantiation order. If still divergent, record it as a finding (solver/order sensitivity), don't hide it.
 - Honest output is a feature: "STABLE WITHIN TESTED RANGE" is a valid, complete result. Never fake a fan.
@@ -69,4 +69,5 @@ Applies to every edit under `Assets/BugCam/Core/**`.
 - Simulation and local `PhysicsScene` correctness: `BugCam.Tests.PlayMode` — fresh local Physics3D scenes, falling Rigidbody, 14-float state, stable IDs, perturbation, A/B/A-prime, cleanup. Do not move these back into EditMode; do not use EnterPlayMode/ExitPlayMode from the PlayMode assembly.
 - Tower demo scene: `Assets/BugCam/Tests/TowerScene.unity`, asserted via harness, not eyeballed.
 - Never mark a block done without its verification step from PLAN.md executed and result noted in STATUS.md.
+- `*.csproj` stays gitignored deliberately: no csproj is tracked and none exists in the worktree — the Block 1.3 "headless test csproj" was never created (headless runs go through `Tools/BugCam/run-checkpoint.ps1`); if a hand-authored csproj ever becomes necessary, generate it from a committed script instead of force-adding it (decision 2026-08-03, Block 2.2.1).
 - Day 1 checkpoint remains NOT PASSED until Block 1.1 tower determinism measurements exist — passing unit tests alone is not that checkpoint.

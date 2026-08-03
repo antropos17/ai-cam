@@ -85,7 +85,9 @@ namespace BugCam.Core
         public const float DefaultEpsilonStart = 1e-5f;
 
         // 2. Why: docs/PLAN.md Block 1.4 fixes the exponential multiplier at x2, which reaches
-        // the 10 mm ceiling from 0.01 mm in 10 steps.
+        // the 10 mm ceiling from 0.01 mm in 10 steps. Read ONLY by the Exponential-refinement
+        // phase (the cursor is multiplied/divided by this factor per probe); the ladder phase
+        // never uses this field.
         public const float DefaultEpsilonGrowthFactor = 2f;
 
         // 1e-2 m (10 mm). Why: docs/PLAN.md Block 1.4 fixes the upper bound of the tested
@@ -98,6 +100,9 @@ namespace BugCam.Core
 
         // 12. Why: docs/PLAN.md Block 1.4 fixes a 12-point log-uniform ladder from 0.01 mm to
         // 10 mm, run before bisection is trusted, so non-monotonicity shows up as data.
+        // The ladder interpolates [EpsilonStart, EpsilonCeiling] with its own log-uniform step
+        // ((ceiling/start)^(1/(count-1))) and does not read EpsilonGrowthFactor; the two
+        // progressions coincide only when ceiling/start = factor^(count-1).
         public const int DefaultLadderPointCount = 12;
 
         // ---------------------------------------------------------------------------------
