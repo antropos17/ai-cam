@@ -90,7 +90,7 @@ namespace BugCam.Tests
             {
                 if (step >= divergeAt)
                 {
-                    // 1.1 m on a 1 m scale ⇒ scene score 1.1 > default SceneScoreThreshold 1.
+                    // 1.1 m on a 1 m scale ⇒ max per-body norm 1.1 > default SceneScoreThreshold 0.2.
                     buffer[offset] = 1.1f;
                 }
             });
@@ -548,6 +548,37 @@ namespace BugCam.Tests
         }
 
         [Test]
+        public void SceneScoreIsMaxPerBodyNormNotSum()
+        {
+            // Block 2.2.1 A3 pin: two bodies at 0.5 m each on a 1 m scale — a sum would
+            // give 1.0, the ratified max-per-body norm gives 0.5. Guards against a silent
+            // regression to the measured-degenerate sum (3.39 on zero-affected steps).
+            var thresholds = MakeThresholds(
+                perBodyPositionThreshold: 1e-3f,
+                perBodyRotationThreshold: 1f,
+                perBodyVelocityThreshold: 0.05f,
+                sceneScoreThreshold: 999f,
+                sustainedSteps: 5,
+                weightPosition: 1f,
+                weightRotation: 0f,
+                weightVelocity: 0f,
+                weightSleep: 0f);
+
+            var baseline = BuildFrames(1, 2, null);
+            var perturbed = BuildFrames(1, 2, (step, body, offset, buffer) =>
+            {
+                buffer[offset] = 0.5f;
+            });
+
+            var result = Analyze(baseline, perturbed, 0.001f, thresholds, new[] { 1f, 1f });
+            Assert.That(Prop<bool>(result, "Succeeded"), Is.True, Prop<string>(result, "ErrorReason"));
+            Assert.That(
+                Prop<float[]>(result, "SceneScorePerStep")[0],
+                Is.EqualTo(0.5f).Within(1e-5f),
+                "Scene score must be the max per-body norm, not the sum over bodies.");
+        }
+
+        [Test]
         public void DivergenceSettingsExposeContractDefaults()
         {
             var settingsType = Type.GetType("BugCam.Core.DivergenceSettings, BugCam.Core");
@@ -556,6 +587,10 @@ namespace BugCam.Tests
 
             var settings = settingsType.GetMethod("CreateDefault").Invoke(null, null);
             Assert.That(Prop<object>(settings, "SustainedSteps"), Is.EqualTo(5));
+            // Re-ratified 2026-08-03 (Block 2.2.1 A3) over measured tower distributions:
+            // max-per-body-norm score, threshold 10× above noise p99 (0.0202), below the
+            // measured divergence floor (0.311).
+            Assert.That(Prop<object>(settings, "SceneScoreThreshold"), Is.EqualTo(0.2f));
             Assert.That(Prop<object>(settings, "EpsilonStart"), Is.EqualTo(1e-5f));
             Assert.That(Prop<object>(settings, "EpsilonCeiling"), Is.EqualTo(1e-2f));
             Assert.That(Prop<object>(settings, "LadderPointCount"), Is.EqualTo(12));

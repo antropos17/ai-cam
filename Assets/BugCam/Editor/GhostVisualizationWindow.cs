@@ -34,6 +34,7 @@ namespace BugCam.Editor
 
         // A1 entry persistence (docs/CONTRACT-2.2.1.md): SessionState, asset by GUID,
         // epsilon overrides as canonical full-precision metres.
+        private const string SceneKindKey = "BugCam.GhostWindow.SceneKind";
         private const string AssetGuidKey = "BugCam.GhostWindow.SettingsAssetGuid";
         private const string HasFloorOverrideKey = "BugCam.GhostWindow.HasFloorOverride";
         private const string FloorOverrideKey = "BugCam.GhostWindow.FloorOverrideMetres";
@@ -69,10 +70,20 @@ namespace BugCam.Editor
         private static readonly GUIContent RunButtonContent = new GUIContent("Запустить поиск");
         private static readonly GUIContent InterruptContent = new GUIContent("Прервать");
         private static readonly GUIContent InterruptingContent = new GUIContent("Прерывание…");
+        private static readonly GUIContent SceneKindLabel = new GUIContent(
+            "Сцена",
+            "Что симулируется: процедурная башня (гейт-путь блока 2.2) или захват " +
+            "открытой сцены (A2: Box/Sphere, кинематика замораживается в статику, " +
+            "неподдерживаемое — fail-closed).");
+        private static readonly GUIContent[] SceneKindOptions =
+        {
+            new GUIContent("Башня (процедурная)"),
+            new GUIContent("Открытая сцена (захват)")
+        };
         private static readonly GUIContent TargetLabel = new GUIContent(
             "Цель",
-            "Возмущаемое тело процедурной TowerScene (открытая сцена не используется). " +
-            "Список приходит из display-name provider'а.");
+            "Возмущаемое тело. Башня — тела процедурной TowerScene; открытая сцена — " +
+            "захваченные динамические тела. Список приходит из display-name provider'а.");
         private static readonly GUIContent AssetLabel = new GUIContent(
             "Ассет настроек",
             "DivergenceSettings-ассет как источник настроек поиска; пусто = дефолты кода. " +
@@ -200,6 +211,12 @@ namespace BugCam.Editor
         private int _targetIndex;
         private GhostSearchTargetOption[] _targetOptions;
         private GUIContent[] _targetOptionContents;
+        // A2 scene kind + edit-mode capture (dropdown + report; the runner re-captures
+        // authoritatively at run start and that capture goes to the manifest).
+        private int _sceneKindIndex;
+        [NonSerialized] private SceneCaptureResult _sceneCapture;
+        [NonSerialized] private string _captureSummaryRow = string.Empty;
+        [NonSerialized] private string[] _captureDetailRows = Array.Empty<string>();
         // Edit buffers: committed via DelayedTextField; invalid text is kept on screen
         // with the field's verbatim reason (fail-closed, no silent revert).
         private string _floorText = string.Empty;
@@ -227,9 +244,6 @@ namespace BugCam.Editor
             _setupExpanded = !EditorPrefs.GetBool(SetupCollapsedKey, false);
 
             LoadEntryState();
-            _readyStatus = "Готово к поиску: " +
-                BugCam.Core.TowerProbeRequestFactory.ExpectedBodyCount.ToString(CultureInfo.InvariantCulture) +
-                " тел";
             RebuildStepsTooltip();
             RefreshEntry();
             RefreshEvidenceDirState();
@@ -259,6 +273,8 @@ namespace BugCam.Editor
             UnityEditor.Compilation.CompilationPipeline.compilationFinished += OnCompilationEvent;
             // Asset deletion/move must re-validate the entry (fail-closed asset row).
             EditorApplication.projectChanged += OnProjectChanged;
+            // A2: scene edits must re-capture (dropdown + report stay honest).
+            EditorApplication.hierarchyChanged += OnHierarchyChanged;
         }
 
         private void OnDisable()
@@ -269,11 +285,27 @@ namespace BugCam.Editor
             UnityEditor.Compilation.CompilationPipeline.compilationStarted -= OnCompilationEvent;
             UnityEditor.Compilation.CompilationPipeline.compilationFinished -= OnCompilationEvent;
             EditorApplication.projectChanged -= OnProjectChanged;
+            EditorApplication.hierarchyChanged -= OnHierarchyChanged;
             // Session survives window close for Scene View; do not dispose here.
         }
 
         private void OnProjectChanged()
         {
+            RefreshEntry();
+            Repaint();
+        }
+
+        private void OnHierarchyChanged()
+        {
+            // Only the captured-scene mode depends on the hierarchy; never re-capture
+            // while the search pipeline runs (temporary physics scenes churn objects).
+            if (_sceneKindIndex != (int)GhostSearchSceneKind.CapturedScene ||
+                EditorApplication.isPlayingOrWillChangePlaymode ||
+                GhostEvidencePlayModeHost.IsSearchBusy)
+            {
+                return;
+            }
+
             RefreshEntry();
             Repaint();
         }
@@ -441,6 +473,22 @@ namespace BugCam.Editor
                 EditorGUI.indentLevel++;
 
                 EditorGUI.BeginChangeCheck();
+                _sceneKindIndex = EditorGUILayout.Popup(
+                    SceneKindLabel,
+                    _sceneKindIndex,
+                    SceneKindOptions);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    SessionState.SetInt(SceneKindKey, _sceneKindIndex);
+                    RefreshEntry();
+                }
+
+                if (_sceneKindIndex == (int)GhostSearchSceneKind.CapturedScene)
+                {
+                    DrawCaptureReport();
+                }
+
+                EditorGUI.BeginChangeCheck();
                 var newAsset = (DivergenceSettings)EditorGUILayout.ObjectField(
                     AssetLabel,
                     _settingsAsset,
@@ -455,7 +503,8 @@ namespace BugCam.Editor
 
                 EditorGUI.BeginChangeCheck();
                 _targetIndex = EditorGUILayout.Popup(TargetLabel, _targetIndex, _targetOptionContents);
-                if (EditorGUI.EndChangeCheck())
+                if (EditorGUI.EndChangeCheck() &&
+                    _targetIndex >= 0 && _targetIndex < _targetOptions.Length)
                 {
                     _targetBodyId = _targetOptions[_targetIndex].BodyId;
                     SessionState.SetInt(TargetBodyIdKey, _targetBodyId);
@@ -495,6 +544,24 @@ namespace BugCam.Editor
             }
 
             EditorGUILayout.Space(2f);
+        }
+
+        /// <summary>
+        /// A2 capture report inside the setup block: counts + hash, kinematic-freeze
+        /// warnings, every fail-closed reason, and a capped excluded/frozen list.
+        /// </summary>
+        private void DrawCaptureReport()
+        {
+            if (string.IsNullOrEmpty(_captureSummaryRow))
+            {
+                return;
+            }
+
+            EditorGUILayout.LabelField(_captureSummaryRow, _wrapLabelStyle);
+            for (var i = 0; i < _captureDetailRows.Length; i++)
+            {
+                EditorGUILayout.LabelField(_captureDetailRows[i], _reasonStyle);
+            }
         }
 
         private void DrawRangeRow()
@@ -774,6 +841,16 @@ namespace BugCam.Editor
             }
 
             EditorGUILayout.LabelField(_verdictText, _verdictStyle);
+            // A2 contract: kinematic-freeze warnings belong to the result verdict block.
+            if (_document.SceneCapture.Performed)
+            {
+                var captureWarnings = _document.SceneCapture.KinematicFreezeWarnings;
+                for (var i = 0; i < captureWarnings.Length; i++)
+                {
+                    EditorGUILayout.HelpBox(captureWarnings[i], MessageType.Warning);
+                }
+            }
+
             if (!string.IsNullOrEmpty(_verdictMeaning))
             {
                 EditorGUILayout.LabelField(_verdictMeaning, _wrapLabelStyle);
@@ -1121,7 +1198,10 @@ namespace BugCam.Editor
 
                     rows.Add(new ResultRow(
                         "Тел разошлось",
-                        "0 из " + BugCam.Core.TowerProbeRequestFactory.ExpectedBodyCount.ToString(CultureInfo.InvariantCulture)));
+                        "0 из " + (document.SceneCapture.Performed
+                            ? document.SceneCapture.Bodies.Length
+                            : BugCam.Core.TowerProbeRequestFactory.ExpectedBodyCount)
+                        .ToString(CultureInfo.InvariantCulture)));
                     break;
 
                 case EpsilonSearchVerdictKind.NonMonotonicWithinTestedRange:
@@ -1175,6 +1255,7 @@ namespace BugCam.Editor
                     " — полный список в уликах"));
             }
 
+            AddSceneCaptureRows(rows, document);
             AddSettingsSourceRows(rows, document);
             _resultRows = rows.ToArray();
         }
@@ -1184,6 +1265,29 @@ namespace BugCam.Editor
         /// result, not only to the manifest. Captured=false (pre-A1 document) adds no rows —
         /// never fabricate a source.
         /// </summary>
+        /// <summary>
+        /// A2: scene-capture provenance belongs to the result, not only to the manifest.
+        /// Performed=false (tower run) adds no rows.
+        /// </summary>
+        private static void AddSceneCaptureRows(
+            System.Collections.Generic.List<ResultRow> rows,
+            GhostEvidenceDocument document)
+        {
+            var capture = document.SceneCapture;
+            if (!capture.Performed)
+            {
+                return;
+            }
+
+            rows.Add(new ResultRow(
+                "Захват сцены",
+                (capture.Succeeded ? "захвачено" : "fail-closed") + ", " +
+                capture.Bodies.Length.ToString(CultureInfo.InvariantCulture) + " тел, hash " +
+                (capture.CaptureHash.Length >= 12
+                    ? capture.CaptureHash.Substring(0, 12) + "…"
+                    : capture.CaptureHash)));
+        }
+
         private static void AddSettingsSourceRows(
             System.Collections.Generic.List<ResultRow> rows,
             GhostEvidenceDocument document)
@@ -1242,18 +1346,171 @@ namespace BugCam.Editor
             _targetBodyId = SessionState.GetInt(
                 TargetBodyIdKey,
                 GhostSearchTargetCatalog.TowerDefaultTargetBodyId);
+            _sceneKindIndex = SessionState.GetInt(
+                SceneKindKey,
+                (int)GhostSearchSceneKind.Tower);
+        }
 
-            _targetOptions = GhostSearchTargetCatalog.TowerOptions();
+        /// <summary>
+        /// Re-capture (scene mode) and rebuild the target dropdown from the mode's
+        /// display-name provider. A stored target missing from the new option set snaps
+        /// to the mode default visibly (the dropdown shows the new selection) and is
+        /// persisted — the catalogs of the two modes are disjoint by design.
+        /// </summary>
+        private void RebuildTargetOptions()
+        {
+            if (_sceneKindIndex == (int)GhostSearchSceneKind.CapturedScene)
+            {
+                _sceneCapture = SceneCapture.Capture(
+                    UnityEngine.SceneManagement.SceneManager.GetActiveScene());
+                _targetOptions = GhostSearchTargetCatalog.SceneOptions(_sceneCapture);
+            }
+            else
+            {
+                _sceneCapture = default;
+                _targetOptions = GhostSearchTargetCatalog.TowerOptions();
+            }
+
             _targetOptionContents = new GUIContent[_targetOptions.Length];
-            _targetIndex = 0;
+            var found = false;
             for (var i = 0; i < _targetOptions.Length; i++)
             {
                 _targetOptionContents[i] = new GUIContent(_targetOptions[i].DisplayName);
                 if (_targetOptions[i].BodyId == _targetBodyId)
                 {
                     _targetIndex = i;
+                    found = true;
                 }
             }
+
+            if (!found && _targetOptions.Length > 0)
+            {
+                _targetIndex = _sceneKindIndex == (int)GhostSearchSceneKind.Tower
+                    ? _targetOptions.Length - 1
+                    : 0;
+                for (var i = 0; i < _targetOptions.Length; i++)
+                {
+                    if (_targetOptions[i].BodyId ==
+                        GhostSearchTargetCatalog.TowerDefaultTargetBodyId &&
+                        _sceneKindIndex == (int)GhostSearchSceneKind.Tower)
+                    {
+                        _targetIndex = i;
+                        break;
+                    }
+                }
+
+                _targetBodyId = _targetOptions[_targetIndex].BodyId;
+                SessionState.SetInt(TargetBodyIdKey, _targetBodyId);
+            }
+            else if (!found)
+            {
+                _targetIndex = 0;
+            }
+
+            BuildCaptureReportRows();
+        }
+
+        /// <summary>Event-time capture report strings for the setup block (scene mode).</summary>
+        private void BuildCaptureReportRows()
+        {
+            if (_sceneKindIndex != (int)GhostSearchSceneKind.CapturedScene ||
+                !_sceneCapture.Performed)
+            {
+                _captureSummaryRow = string.Empty;
+                _captureDetailRows = Array.Empty<string>();
+                return;
+            }
+
+            var frozen = 0;
+            var excluded = 0;
+            var failed = 0;
+            var statics = 0;
+            for (var i = 0; i < _sceneCapture.Objects.Length; i++)
+            {
+                switch (_sceneCapture.Objects[i].Status)
+                {
+                    case SceneCaptureObjectStatus.FrozenKinematic:
+                        frozen++;
+                        break;
+                    case SceneCaptureObjectStatus.ExcludedSafely:
+                        excluded++;
+                        break;
+                    case SceneCaptureObjectStatus.Failed:
+                        failed++;
+                        break;
+                    case SceneCaptureObjectStatus.CapturedStatic:
+                        statics++;
+                        break;
+                }
+            }
+
+            _sb.Clear();
+            _sb.Append(_sceneCapture.Succeeded ? "Захват: " : "Захват fail-closed: ");
+            _sb.Append(_sceneCapture.Bodies.Length).Append(" тел, ");
+            _sb.Append(statics).Append(" статик, ");
+            _sb.Append(frozen).Append(" заморожено, ");
+            _sb.Append(excluded).Append(" исключено");
+            if (failed > 0)
+            {
+                _sb.Append(", ").Append(failed).Append(" непредставимо");
+            }
+
+            if (_sceneCapture.CaptureHash.Length >= 12)
+            {
+                _sb.Append("   hash ").Append(_sceneCapture.CaptureHash, 0, 12).Append('…');
+            }
+
+            _captureSummaryRow = _sb.ToString();
+
+            // Warnings + every fail-closed reason + non-plain rows, capped for the UI —
+            // the manifest of the next run carries the full list.
+            var rows = new System.Collections.Generic.List<string>(8);
+            for (var i = 0; i < _sceneCapture.KinematicFreezeWarnings.Length; i++)
+            {
+                rows.Add("⚠ " + _sceneCapture.KinematicFreezeWarnings[i]);
+            }
+
+            // Sleeping-body notice: capture report + manifest only, never the verdict.
+            for (var i = 0; i < _sceneCapture.SleepingBodyWarnings.Length; i++)
+            {
+                rows.Add("⚠ " + _sceneCapture.SleepingBodyWarnings[i]);
+            }
+
+            for (var i = 0; i < _sceneCapture.Objects.Length; i++)
+            {
+                var record = _sceneCapture.Objects[i];
+                if (record.Status == SceneCaptureObjectStatus.Failed)
+                {
+                    rows.Add("✗ «" + record.HierarchyPath + "»: " + record.Reason);
+                }
+            }
+
+            var otherShown = 0;
+            var otherTotal = 0;
+            for (var i = 0; i < _sceneCapture.Objects.Length; i++)
+            {
+                var record = _sceneCapture.Objects[i];
+                if (record.Status != SceneCaptureObjectStatus.ExcludedSafely &&
+                    record.Status != SceneCaptureObjectStatus.FrozenKinematic)
+                {
+                    continue;
+                }
+
+                otherTotal++;
+                if (otherShown < 8)
+                {
+                    rows.Add("· «" + record.HierarchyPath + "»: " + record.Reason);
+                    otherShown++;
+                }
+            }
+
+            if (otherTotal > otherShown)
+            {
+                rows.Add("· … ещё " + (otherTotal - otherShown) +
+                         " исключённых/замороженных — полный список в manifest прогона");
+            }
+
+            _captureDetailRows = rows.ToArray();
         }
 
         private GhostSearchEntry BuildEntry()
@@ -1267,7 +1524,8 @@ namespace BugCam.Editor
                 _hasFloorOverride,
                 _floorOverrideMetres,
                 _hasCeilingOverride,
-                _ceilingOverrideMetres);
+                _ceilingOverrideMetres,
+                (GhostSearchSceneKind)_sceneKindIndex);
         }
 
         /// <summary>
@@ -1277,9 +1535,24 @@ namespace BugCam.Editor
         /// </summary>
         private void RefreshEntry()
         {
+            RebuildTargetOptions();
             _resolution = GhostSearchEntryResolver.Resolve(BuildEntry());
             _assetFloorSeen = _settingsAsset != null ? _settingsAsset.EpsilonStart : 0f;
             _assetCeilingSeen = _settingsAsset != null ? _settingsAsset.EpsilonCeiling : 0f;
+            if (_sceneKindIndex == (int)GhostSearchSceneKind.CapturedScene)
+            {
+                _readyStatus = _sceneCapture.Succeeded
+                    ? "Готово к поиску: " +
+                      _sceneCapture.Bodies.Length.ToString(CultureInfo.InvariantCulture) +
+                      " тел (захват сцены)"
+                    : "Захват сцены fail-closed — причины в блоке «Настройка»";
+            }
+            else
+            {
+                _readyStatus = "Готово к поиску: " +
+                    BugCam.Core.TowerProbeRequestFactory.ExpectedBodyCount.ToString(
+                        CultureInfo.InvariantCulture) + " тел";
+            }
 
             if (!_floorTextInvalid)
             {
@@ -1354,7 +1627,11 @@ namespace BugCam.Editor
         private void RebuildSetupSummary()
         {
             _sb.Clear();
-            _sb.Append("Настройка   (b").Append(_targetBodyId);
+            _sb.Append("Настройка   (");
+            _sb.Append(_sceneKindIndex == (int)GhostSearchSceneKind.CapturedScene
+                ? "сцена, b"
+                : "башня, b");
+            _sb.Append(_targetBodyId);
             _sb.Append(", ").Append(AxisOptions[_axisIndex].text);
             _sb.Append(", ").Append(_strategy);
             _sb.Append(", ").Append(_stepCount).Append(" шагов, ε ").Append(_rangeText);

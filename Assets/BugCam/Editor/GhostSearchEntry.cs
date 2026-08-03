@@ -13,6 +13,16 @@ namespace BugCam.Editor
     /// GUID; epsilon overrides are canonical metres (millimetres exist only at the
     /// display layer).
     /// </summary>
+    /// <summary>
+    /// A2: what the search simulates — the procedural tower (gate-pinned path) or a
+    /// capture of the open scene.
+    /// </summary>
+    public enum GhostSearchSceneKind
+    {
+        Tower = 0,
+        CapturedScene = 1
+    }
+
     public readonly struct GhostSearchEntry
     {
         public GhostSearchEntry(
@@ -25,6 +35,31 @@ namespace BugCam.Editor
             float floorOverrideMetres,
             bool hasCeilingOverride,
             float ceilingOverrideMetres)
+            : this(
+                stepCount,
+                strategy,
+                searchAxis,
+                targetBodyId,
+                settingsAssetGuid,
+                hasFloorOverride,
+                floorOverrideMetres,
+                hasCeilingOverride,
+                ceilingOverrideMetres,
+                GhostSearchSceneKind.Tower)
+        {
+        }
+
+        public GhostSearchEntry(
+            int stepCount,
+            EpsilonSearchStrategy strategy,
+            Vector3 searchAxis,
+            int targetBodyId,
+            string settingsAssetGuid,
+            bool hasFloorOverride,
+            float floorOverrideMetres,
+            bool hasCeilingOverride,
+            float ceilingOverrideMetres,
+            GhostSearchSceneKind sceneKind)
         {
             StepCount = stepCount;
             Strategy = strategy;
@@ -35,6 +70,7 @@ namespace BugCam.Editor
             FloorOverrideMetres = floorOverrideMetres;
             HasCeilingOverride = hasCeilingOverride;
             CeilingOverrideMetres = ceilingOverrideMetres;
+            SceneKind = sceneKind;
         }
 
         public int StepCount { get; }
@@ -57,6 +93,9 @@ namespace BugCam.Editor
 
         /// <summary>Metres, full float precision.</summary>
         public float CeilingOverrideMetres { get; }
+
+        /// <summary>A2: Tower (default, gate-pinned) or a capture of the open scene.</summary>
+        public GhostSearchSceneKind SceneKind { get; }
 
         /// <summary>
         /// Default tower entry: projectile target, no asset, no overrides — the exact
@@ -141,6 +180,38 @@ namespace BugCam.Editor
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// A2 scene-capture provider for the same dropdown (contract amendment: real
+        /// object names, no rework). Display name = «hierarchy path — body N».
+        /// </summary>
+        public static GhostSearchTargetOption[] SceneOptions(in SceneCaptureResult capture)
+        {
+            if (!capture.Performed || !capture.Succeeded)
+            {
+                return System.Array.Empty<GhostSearchTargetOption>();
+            }
+
+            var options = new GhostSearchTargetOption[capture.Bodies.Length];
+            var optionIndex = 0;
+            for (var i = 0; i < capture.Objects.Length; i++)
+            {
+                var record = capture.Objects[i];
+                if (record.Status != SceneCaptureObjectStatus.CapturedDynamic ||
+                    optionIndex >= options.Length)
+                {
+                    continue;
+                }
+
+                options[optionIndex] = new GhostSearchTargetOption(
+                    record.StableId,
+                    record.HierarchyPath + " — body " +
+                    record.StableId.ToString(CultureInfo.InvariantCulture));
+                optionIndex++;
+            }
+
+            return options;
         }
     }
 
@@ -288,11 +359,36 @@ namespace BugCam.Editor
 
             var stepsReason = entry.StepCount >= 1 ? string.Empty : ReasonSteps;
 
-            var targetReason = GhostSearchTargetCatalog.Contains(
-                GhostSearchTargetCatalog.TowerOptions(), entry.TargetBodyId)
-                ? string.Empty
-                : "цель body " + entry.TargetBodyId.ToString(CultureInfo.InvariantCulture) +
-                  " отсутствует в наборе тел сцены";
+            string targetReason;
+            if (entry.SceneKind == GhostSearchSceneKind.CapturedScene)
+            {
+                // Fail-closed before Play Mode: an uncapturable scene disables the run
+                // button with the capture's own first per-object reason.
+                var capture = SceneCapture.Capture(
+                    UnityEngine.SceneManagement.SceneManager.GetActiveScene());
+                if (!capture.Succeeded)
+                {
+                    targetReason = capture.FailureSummary;
+                }
+                else if (capture.ContainsBodyId(entry.TargetBodyId))
+                {
+                    targetReason = string.Empty;
+                }
+                else
+                {
+                    targetReason = "цель body " +
+                        entry.TargetBodyId.ToString(CultureInfo.InvariantCulture) +
+                        " отсутствует в захвате сцены";
+                }
+            }
+            else
+            {
+                targetReason = GhostSearchTargetCatalog.Contains(
+                    GhostSearchTargetCatalog.TowerOptions(), entry.TargetBodyId)
+                    ? string.Empty
+                    : "цель body " + entry.TargetBodyId.ToString(CultureInfo.InvariantCulture) +
+                      " отсутствует в наборе тел сцены";
+            }
 
             // Non-epsilon search fields always come from the asset (or defaults); their
             // invalidity is attributed to the asset with the field named by Validate().

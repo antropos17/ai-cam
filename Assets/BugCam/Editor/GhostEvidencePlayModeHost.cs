@@ -140,6 +140,7 @@ namespace BugCam.Editor
             SessionState.SetFloat("BugCam.GhostHost.FloorOverrideMetres", entry.FloorOverrideMetres);
             SessionState.SetBool("BugCam.GhostHost.HasCeilingOverride", entry.HasCeilingOverride);
             SessionState.SetFloat("BugCam.GhostHost.CeilingOverrideMetres", entry.CeilingOverrideMetres);
+            SessionState.SetInt("BugCam.GhostHost.SceneKind", (int)entry.SceneKind);
         }
 
         private static GhostSearchEntry ReadPersistedEntry()
@@ -160,7 +161,10 @@ namespace BugCam.Editor
                 SessionState.GetBool("BugCam.GhostHost.HasFloorOverride", false),
                 SessionState.GetFloat("BugCam.GhostHost.FloorOverrideMetres", 0f),
                 SessionState.GetBool("BugCam.GhostHost.HasCeilingOverride", false),
-                SessionState.GetFloat("BugCam.GhostHost.CeilingOverrideMetres", 0f));
+                SessionState.GetFloat("BugCam.GhostHost.CeilingOverrideMetres", 0f),
+                (GhostSearchSceneKind)SessionState.GetInt(
+                    "BugCam.GhostHost.SceneKind",
+                    (int)GhostSearchSceneKind.Tower));
         }
 
         private static void OnPlayModeStateChanged(PlayModeStateChange state)
@@ -422,6 +426,15 @@ namespace BugCam.Editor
                     resolution.EffectiveFloorMetres,
                     resolution.EffectiveCeilingMetres);
 
+                // A2: capture the open scene once, before any simulation — this capture is
+                // authoritative for the run and its manifest. Tower runs never capture.
+                var sceneCapture = default(SceneCaptureResult);
+                if (entry.SceneKind == GhostSearchSceneKind.CapturedScene)
+                {
+                    sceneCapture = SceneCapture.Capture(
+                        UnityEngine.SceneManagement.SceneManager.GetActiveScene());
+                }
+
                 GhostEvidenceDocument document;
                 var searchResult = default(EpsilonSearchResult);
                 if (!GhostSearchEntryResolver.TryCreateRuntimeSettings(
@@ -439,7 +452,42 @@ namespace BugCam.Editor
                         DivergenceSettings.DefaultGhostBodyLimit,
                         null,
                         environment,
-                        provenance);
+                        provenance,
+                        sceneCapture);
+                }
+                else if (entry.SceneKind == GhostSearchSceneKind.CapturedScene &&
+                         !sceneCapture.Succeeded)
+                {
+                    // Fail-closed: no simulation over a scene that did not capture cleanly.
+                    Debug.LogError("BugCam: " + sceneCapture.FailureSummary);
+                    document = GhostEvidenceBuilder.CreateFailureDocument(
+                        searchResult,
+                        identity,
+                        GhostEvidenceErrorCodes.SceneCaptureFailed,
+                        sceneCapture.FailureSummary,
+                        settings.GhostBodyLimit,
+                        null,
+                        environment,
+                        provenance,
+                        sceneCapture);
+                }
+                else if (entry.SceneKind == GhostSearchSceneKind.CapturedScene &&
+                         !sceneCapture.ContainsBodyId(entry.TargetBodyId))
+                {
+                    var reason = "цель body " + entry.TargetBodyId +
+                                 " отсутствует в захвате сцены (сцена изменилась после " +
+                                 "валидации в окне)";
+                    Debug.LogError("BugCam: " + reason);
+                    document = GhostEvidenceBuilder.CreateFailureDocument(
+                        searchResult,
+                        identity,
+                        GhostEvidenceErrorCodes.SceneCaptureFailed,
+                        reason,
+                        settings.GhostBodyLimit,
+                        null,
+                        environment,
+                        provenance,
+                        sceneCapture);
                 }
                 else
                 {
@@ -449,7 +497,9 @@ namespace BugCam.Editor
                         identity.SearchAxis,
                         identity.Strategy);
                     _liveSearch = search;
-                    var bodies = TowerProbeRequestFactory.CreateBaseline(entry.StepCount).Bodies;
+                    var bodies = entry.SceneKind == GhostSearchSceneKind.CapturedScene
+                        ? sceneCapture.Bodies
+                        : TowerProbeRequestFactory.CreateBaseline(entry.StepCount).Bodies;
                     var scales = new float[bodies.Length];
                     for (var i = 0; i < bodies.Length; i++)
                     {
@@ -458,6 +508,12 @@ namespace BugCam.Editor
                     }
 
                     var runner = new EpsilonSearchRunner();
+                    if (entry.SceneKind == GhostSearchSceneKind.CapturedScene)
+                    {
+                        // Captured statics replace the legacy tower ground in every probe.
+                        runner.StaticColliders = sceneCapture.StaticColliders;
+                    }
+
                     // Unity MonoBehaviour nested-coroutine semantics pump runner.Run fully,
                     // including per-frame WaitForSceneCleanup yields.
                     yield return runner.Run(
@@ -480,7 +536,8 @@ namespace BugCam.Editor
                         scales,
                         null,
                         environment,
-                        provenance);
+                        provenance,
+                        sceneCapture);
                     if (!build.Succeeded || build.Document == null)
                     {
                         document = GhostEvidenceBuilder.CreateFailureDocument(
@@ -493,7 +550,8 @@ namespace BugCam.Editor
                             settings.GhostBodyLimit,
                             null,
                             environment,
-                            provenance);
+                            provenance,
+                            sceneCapture);
                     }
                     else
                     {

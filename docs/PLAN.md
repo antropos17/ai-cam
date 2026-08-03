@@ -20,7 +20,7 @@ Everything else in SPEC.md (CI, attribution, capsule viewer, subscription) is ba
 - VERIFY: kinematic replay reproduces the recorded transforms frame for frame — `maxComponentDelta == 0`, asserted in the harness. Visual inspection is an optional extra, never the verification.
 
 ### Block 1.3 — Divergence Engine
-- Per-body per-frame: posError/objectScale, rotation angle error, velocity error, sleep mismatch. Scene Divergence Score = weighted sum.
+- Per-body per-frame: posError/objectScale, rotation angle error, velocity error, sleep mismatch. Scene Divergence Score = MAX per-body weighted norm (re-ratified 2026-08-03, Block 2.2.1 A3, from the original weighted sum — the sum was measured degenerate on the 49-body tower; `SceneScoreThreshold` re-ratified to 0.2 over measured distributions, see `docs/CONTRACT-2.2.1.md` and the A3 Evidence log).
 - Significant = score > threshold, sustained ≥ 5 steps, AND ≥ 1 tracked body exceeds `DivergenceSettings.PerBodyPositionThreshold`.
 - Output: firstDivergenceFrame, maxSpread (m), affectedBodies, amplification = maxSpread(m) / epsilon(m) — both in metres; mm is display formatting only.
 

@@ -17,11 +17,15 @@ namespace BugCam.Core
     ///   velNorm = velocityErrorMetresPerSecond / PerBodyVelocityThreshold
     ///   sleep   = 0 or 1
     ///
-    /// Scene Divergence Score (per step) = weighted sum over tracked bodies
-    ///   Σ_i (WeightPosition*posNorm_i + WeightRotation*rotNorm_i
-    ///       + WeightVelocity*velNorm_i + WeightSleep*sleep_i)
-    /// (SPEC/PLAN: weighted sum — not a mean. Default SceneScoreThreshold=1 matches one
-    /// body reaching a full normalization unit.)
+    /// Scene Divergence Score (per step) = MAX over tracked bodies of the per-body
+    /// weighted norm
+    ///   max_i (WeightPosition*posNorm_i + WeightRotation*rotNorm_i
+    ///        + WeightVelocity*velNorm_i + WeightSleep*sleep_i)
+    /// (Re-ratified 2026-08-03, Block 2.2.1 A3, over measured tower distributions: the
+    /// previous sum over bodies reached 3.39 on steps with zero affected bodies on the
+    /// 49-body tower, making its threshold vacuous and scene-size-dependent. Max compares
+    /// one body's norm regardless of body count. Default SceneScoreThreshold=0.2 — see
+    /// the DivergenceSettings why-comment.)
     ///
     /// Significant only when score &gt; SceneScoreThreshold AND at least one body exceeds
     /// PerBodyPositionThreshold AND both hold for SustainedSteps consecutive frames.
@@ -66,10 +70,15 @@ namespace BugCam.Core
                 return DivergenceResult.Failure("BodyCount must be greater than zero.");
             }
 
+            // Intentional dead-code guard: StateStride is a const equal to 14 today,
+            // so this branch is unreachable by design — it fires only if the constant
+            // is ever changed without updating the recording layout. Do not remove.
+#pragma warning disable 0162
             if (BugCamConstants.StateStride != 14)
             {
                 return DivergenceResult.Failure("State stride must be exactly 14 floats.");
             }
+#pragma warning restore 0162
 
             var expectedLength = stepCount * bodyCount * BugCamConstants.StateStride;
             if (baselineFrames.Length != expectedLength ||
@@ -185,11 +194,15 @@ namespace BugCam.Core
                         velocityError / thresholds.PerBodyVelocityThreshold,
                         0f);
 
-                    sceneScore +=
+                    var bodyNorm =
                         thresholds.WeightPosition * posNorm +
                         thresholds.WeightRotation * rotNorm +
                         thresholds.WeightVelocity * velNorm +
                         thresholds.WeightSleep * sleepMismatch;
+                    if (bodyNorm > sceneScore)
+                    {
+                        sceneScore = bodyNorm;
+                    }
 
                     if (positionError > thresholds.PerBodyPositionThreshold)
                     {

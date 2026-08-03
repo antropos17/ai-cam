@@ -1019,6 +1019,9 @@ namespace BugCam.Tests
 
             try
             {
+                var captureType = Type.GetType(
+                    "BugCam.Core.SceneCaptureResult, BugCam.Core");
+                Assert.That(captureType, Is.Not.Null);
                 var build = builderType.GetMethod(
                     "Build",
                     new[]
@@ -1029,7 +1032,8 @@ namespace BugCam.Tests
                         typeof(float[]),
                         typeof(string),
                         envType,
-                        provenanceType
+                        provenanceType,
+                        captureType
                     }).Invoke(
                     null,
                     new object[]
@@ -1040,7 +1044,8 @@ namespace BugCam.Tests
                         null,
                         runId,
                         environment,
-                        Activator.CreateInstance(provenanceType)
+                        Activator.CreateInstance(provenanceType),
+                        Activator.CreateInstance(captureType)
                     });
 
                 Assert.That(Prop<bool>(build, "Succeeded"), Is.True, Prop<string>(build, "ErrorReason"));
@@ -1072,6 +1077,7 @@ namespace BugCam.Tests
 
             var provenanceType = Type.GetType(
                 "BugCam.Evidence.GhostSettingsProvenance, BugCam.Evidence");
+            var captureType = Type.GetType("BugCam.Core.SceneCaptureResult, BugCam.Core");
             return builderType.GetMethod(
                     "CreateFailureDocument",
                     BindingFlags.Public | BindingFlags.Static)
@@ -1086,7 +1092,8 @@ namespace BugCam.Tests
                         10,
                         "build-failed-run",
                         environment,
-                        Activator.CreateInstance(provenanceType)
+                        Activator.CreateInstance(provenanceType),
+                        Activator.CreateInstance(captureType)
                     });
         }
 

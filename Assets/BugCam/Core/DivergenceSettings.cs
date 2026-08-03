@@ -35,14 +35,19 @@ namespace BugCam.Core
         // describe the same physical event instead of two unrelated ones.
         public const float DefaultPerBodyVelocityThreshold = 0.05f;
 
-        // 1.0. Why: the Scene Divergence Score is the weighted sum of normalized per-body terms,
-        // so 1.0 means one tracked body has reached a full normalization unit — its own size in
-        // position, or twice the rotation/velocity threshold at the default weights. The Block
-        // 1.1 identical-run noise floor (1e-6 m over 49 bodies) sums to ~1e-4, four orders of
-        // magnitude below this, so the gate cannot fire on numerical noise. A mean-based gate was
-        // rejected: it hides the first one or two bodies that move, which is exactly the moment
-        // the product exists to find.
-        public const float DefaultSceneScoreThreshold = 1f;
+        // 0.2. Why: RE-RATIFIED 2026-08-03 (Block 2.2.1 A3) over measured tower distributions
+        // (measurement commit e1c1cfc; Library/BugCamEvidence/Block2.2.1-a3-measure, 480 steps
+        // = 15 fans × 32). The score is
+        // now the MAX per-body weighted norm (not a sum), so the threshold compares one body's
+        // norm regardless of scene size. 0.2 sits 10× above the measured noise p99 (0.0202) and
+        // below the measured divergence-class floor (0.311). The lone 0.537 noise transient is
+        // adjacent-to-divergence (sub-threshold burst at the divergence frame) and is contained
+        // by the AND-gate's per-body position half — verified on the measured data: zero noise
+        // steps pass the full gate. The previous sum-based score at threshold 1 was measured
+        // degenerate: sums reach 3.39 on steps with zero affected bodies on the 49-body tower.
+        // A mean-based gate remains rejected: it hides the first one or two bodies that move,
+        // which is exactly the moment the product exists to find.
+        public const float DefaultSceneScoreThreshold = 0.2f;
 
         // 5 steps = 0.1 s at the fixed step. Why: fixed by docs/PLAN.md Block 1.3; long enough
         // that a single-frame solver blip can never be reported as divergence.
@@ -212,7 +217,7 @@ namespace BugCam.Core
 
         [Header("Block 1.3 — scene score")]
         [SerializeField]
-        [Tooltip("Dimensionless. Weighted-sum gate for the Scene Divergence Score.")]
+        [Tooltip("Dimensionless. Gate over the per-step MAX per-body weighted norm.")]
         private float sceneScoreThreshold = DefaultSceneScoreThreshold;
 
         [SerializeField]
@@ -313,7 +318,7 @@ namespace BugCam.Core
         /// <summary>Metres per second. Per-body velocity gate.</summary>
         public float PerBodyVelocityThreshold => perBodyVelocityThreshold;
 
-        /// <summary>Dimensionless weighted-sum gate.</summary>
+        /// <summary>Dimensionless gate over the per-step max per-body weighted norm.</summary>
         public float SceneScoreThreshold => sceneScoreThreshold;
 
         /// <summary>Consecutive physics steps required.</summary>
