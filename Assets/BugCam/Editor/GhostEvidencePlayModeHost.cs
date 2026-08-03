@@ -56,9 +56,10 @@ namespace BugCam.Editor
         public static void MenuRunTowerStep32()
         {
             if (!TryStartTowerSearch(
-                    32,
-                    EpsilonSearchStrategy.AscendFromStart,
-                    Vector3.right,
+                    GhostSearchEntry.Tower(
+                        32,
+                        EpsilonSearchStrategy.AscendFromStart,
+                        Vector3.right),
                     SourceMenu,
                     out var rejectReason))
             {
@@ -70,12 +71,12 @@ namespace BugCam.Editor
         public static bool IsSearchBusy => SessionState.GetBool(BusyKey, false);
 
         /// <summary>
-        /// Sole public entry for Window / menu tower search. Rejects when Busy.
+        /// Sole public entry for Window / menu tower search. Rejects when Busy or when the
+        /// entry fails the ratified A1 validation (fail-closed — the window pre-validates,
+        /// this is the pipeline's own gate).
         /// </summary>
         public static bool TryStartTowerSearch(
-            int stepCount,
-            EpsilonSearchStrategy strategy,
-            Vector3 searchAxis,
+            GhostSearchEntry entry,
             string source,
             out string rejectReason)
         {
@@ -85,16 +86,19 @@ namespace BugCam.Editor
                 return false;
             }
 
-            StartTowerSearch(stepCount, strategy, searchAxis, source ?? SourceMenu);
+            var resolution = GhostSearchEntryResolver.Resolve(entry);
+            if (!resolution.IsValid)
+            {
+                rejectReason = resolution.FirstReason;
+                return false;
+            }
+
+            StartTowerSearch(entry, source ?? SourceMenu);
             rejectReason = null;
             return true;
         }
 
-        private static void StartTowerSearch(
-            int stepCount,
-            EpsilonSearchStrategy strategy,
-            Vector3 searchAxis,
-            string source)
+        private static void StartTowerSearch(GhostSearchEntry entry, string source)
         {
             SessionState.SetBool(BusyKey, true);
             SessionState.SetString(SourceKey, source ?? SourceMenu);
@@ -102,11 +106,7 @@ namespace BugCam.Editor
             if (!EditorApplication.isPlaying)
             {
                 SessionState.SetBool(PendingKey, true);
-                SessionState.SetInt("BugCam.GhostHost.StepCount", stepCount);
-                SessionState.SetInt("BugCam.GhostHost.Strategy", (int)strategy);
-                SessionState.SetFloat("BugCam.GhostHost.AxisX", searchAxis.x);
-                SessionState.SetFloat("BugCam.GhostHost.AxisY", searchAxis.y);
-                SessionState.SetFloat("BugCam.GhostHost.AxisZ", searchAxis.z);
+                PersistEntry(entry);
                 if (AllowPlayModeEntry)
                 {
                     // Host-initiated Play Mode entry: remember it so completion can exit
@@ -119,7 +119,48 @@ namespace BugCam.Editor
                 return;
             }
 
-            EnsureRunner(stepCount, strategy, searchAxis);
+            EnsureRunner(entry);
+        }
+
+        /// <summary>
+        /// A1 entry persistence across the Play Mode domain reload: every parameter the
+        /// runner needs, the settings asset as a GUID, epsilon overrides as canonical
+        /// full-precision metres.
+        /// </summary>
+        private static void PersistEntry(in GhostSearchEntry entry)
+        {
+            SessionState.SetInt("BugCam.GhostHost.StepCount", entry.StepCount);
+            SessionState.SetInt("BugCam.GhostHost.Strategy", (int)entry.Strategy);
+            SessionState.SetFloat("BugCam.GhostHost.AxisX", entry.SearchAxis.x);
+            SessionState.SetFloat("BugCam.GhostHost.AxisY", entry.SearchAxis.y);
+            SessionState.SetFloat("BugCam.GhostHost.AxisZ", entry.SearchAxis.z);
+            SessionState.SetInt("BugCam.GhostHost.TargetBodyId", entry.TargetBodyId);
+            SessionState.SetString("BugCam.GhostHost.SettingsAssetGuid", entry.SettingsAssetGuid);
+            SessionState.SetBool("BugCam.GhostHost.HasFloorOverride", entry.HasFloorOverride);
+            SessionState.SetFloat("BugCam.GhostHost.FloorOverrideMetres", entry.FloorOverrideMetres);
+            SessionState.SetBool("BugCam.GhostHost.HasCeilingOverride", entry.HasCeilingOverride);
+            SessionState.SetFloat("BugCam.GhostHost.CeilingOverrideMetres", entry.CeilingOverrideMetres);
+        }
+
+        private static GhostSearchEntry ReadPersistedEntry()
+        {
+            return new GhostSearchEntry(
+                SessionState.GetInt("BugCam.GhostHost.StepCount", 32),
+                (EpsilonSearchStrategy)SessionState.GetInt(
+                    "BugCam.GhostHost.Strategy",
+                    (int)EpsilonSearchStrategy.AscendFromStart),
+                new Vector3(
+                    SessionState.GetFloat("BugCam.GhostHost.AxisX", 1f),
+                    SessionState.GetFloat("BugCam.GhostHost.AxisY", 0f),
+                    SessionState.GetFloat("BugCam.GhostHost.AxisZ", 0f)),
+                SessionState.GetInt(
+                    "BugCam.GhostHost.TargetBodyId",
+                    GhostSearchTargetCatalog.TowerDefaultTargetBodyId),
+                SessionState.GetString("BugCam.GhostHost.SettingsAssetGuid", string.Empty),
+                SessionState.GetBool("BugCam.GhostHost.HasFloorOverride", false),
+                SessionState.GetFloat("BugCam.GhostHost.FloorOverrideMetres", 0f),
+                SessionState.GetBool("BugCam.GhostHost.HasCeilingOverride", false),
+                SessionState.GetFloat("BugCam.GhostHost.CeilingOverrideMetres", 0f));
         }
 
         private static void OnPlayModeStateChanged(PlayModeStateChange state)
@@ -229,21 +270,10 @@ namespace BugCam.Editor
             }
 
             SessionState.SetBool(PendingKey, false);
-            var stepCount = SessionState.GetInt("BugCam.GhostHost.StepCount", 32);
-            var strategy = (EpsilonSearchStrategy)SessionState.GetInt(
-                "BugCam.GhostHost.Strategy",
-                (int)EpsilonSearchStrategy.AscendFromStart);
-            var axis = new Vector3(
-                SessionState.GetFloat("BugCam.GhostHost.AxisX", 1f),
-                SessionState.GetFloat("BugCam.GhostHost.AxisY", 0f),
-                SessionState.GetFloat("BugCam.GhostHost.AxisZ", 0f));
-            EnsureRunner(stepCount, strategy, axis);
+            EnsureRunner(ReadPersistedEntry());
         }
 
-        private static void EnsureRunner(
-            int stepCount,
-            EpsilonSearchStrategy strategy,
-            Vector3 axis)
+        private static void EnsureRunner(GhostSearchEntry entry)
         {
             DestroyTempRunnerIfPresent(preferDeferredDestroy: false);
 
@@ -251,7 +281,7 @@ namespace BugCam.Editor
             UnityEngine.Object.DontDestroyOnLoad(go);
             go.hideFlags = HideFlags.DontSave;
             var runner = go.AddComponent<GhostEvidenceRunnerBehaviour>();
-            runner.Begin(stepCount, strategy, axis, SessionState.GetString(SourceKey, SourceMenu));
+            runner.Begin(entry, SessionState.GetString(SourceKey, SourceMenu));
         }
 
         private static void FinishBusy()
@@ -318,13 +348,9 @@ namespace BugCam.Editor
             private int _lastStepTotal = -1;
             private float _lastEpsilonMetres = -1f;
 
-            public void Begin(
-                int stepCount,
-                EpsilonSearchStrategy strategy,
-                Vector3 axis,
-                string source)
+            public void Begin(GhostSearchEntry entry, string source)
             {
-                StartCoroutine(Run(stepCount, strategy, axis, source));
+                StartCoroutine(Run(entry, source));
             }
 
             private void Update()
@@ -372,71 +398,107 @@ namespace BugCam.Editor
                 }
             }
 
-            private IEnumerator Run(
-                int stepCount,
-                EpsilonSearchStrategy strategy,
-                Vector3 axis,
-                string source)
+            private IEnumerator Run(GhostSearchEntry entry, string source)
             {
-                var settings = DivergenceSettings.CreateDefault();
-                var identity = new GhostSearchIdentity(49, axis.normalized, strategy);
+                var identity = new GhostSearchIdentity(
+                    entry.TargetBodyId,
+                    entry.SearchAxis.normalized,
+                    entry.Strategy);
                 var environment = GhostRunEnvironment.Capture(
                     UnityEngine.SceneManagement.SceneManager.GetActiveScene().path,
                     CapturePhysicsSnapshot());
-                var search = new EpsilonSearch(
-                    settings.ToSearchSettings(),
-                    identity.TargetBodyId,
-                    identity.SearchAxis,
-                    identity.Strategy);
-                _liveSearch = search;
-                var bodies = TowerProbeRequestFactory.CreateBaseline(stepCount).Bodies;
-                var scales = new float[bodies.Length];
-                for (var i = 0; i < bodies.Length; i++)
-                {
-                    var s = bodies[i].Size;
-                    scales[i] = Mathf.Max(s.x, Mathf.Max(s.y, s.z));
-                }
 
-                var runner = new EpsilonSearchRunner();
-                // Unity MonoBehaviour nested-coroutine semantics pump runner.Run fully,
-                // including per-frame WaitForSceneCleanup yields.
-                yield return runner.Run(
-                    search,
-                    bodies,
-                    stepCount,
-                    settings.ToThresholds(),
-                    scales);
-
-                _liveSearch = null;
-                var searchResult = runner.LastResult;
-                Debug.Log(GhostEvidenceWriter.FormatHonestSearchReport(
-                    searchResult,
-                    searchResult.Succeeded));
+                // The single settings path (docs/CONTRACT-2.2.1.md A1): re-resolve the
+                // persisted entry; a vanished asset fails closed — never a silent
+                // fall-back to defaults.
+                var resolution = GhostSearchEntryResolver.Resolve(entry);
+                var provenance = new GhostSettingsProvenance(
+                    resolution.SourceKind,
+                    resolution.SourceDescription,
+                    resolution.AssetName,
+                    entry.SettingsAssetGuid,
+                    entry.HasFloorOverride,
+                    entry.HasCeilingOverride,
+                    resolution.EffectiveFloorMetres,
+                    resolution.EffectiveCeilingMetres);
 
                 GhostEvidenceDocument document;
-                var build = GhostEvidenceBuilder.Build(
-                    searchResult,
-                    identity,
-                    settings,
-                    scales,
-                    null,
-                    environment);
-                if (!build.Succeeded || build.Document == null)
+                var searchResult = default(EpsilonSearchResult);
+                if (!GhostSearchEntryResolver.TryCreateRuntimeSettings(
+                        resolution,
+                        out var settings,
+                        out var effectiveSearchSettings,
+                        out var resolveFailReason))
                 {
+                    Debug.LogError("BugCam: search entry settings resolve failed: " + resolveFailReason);
                     document = GhostEvidenceBuilder.CreateFailureDocument(
                         searchResult,
                         identity,
-                        searchResult.Succeeded
-                            ? GhostEvidenceErrorCodes.BuildFailed
-                            : GhostEvidenceBuilder.ResolveSearchErrorCode(searchResult.ErrorReason),
-                        build.ErrorReason ?? searchResult.ErrorReason,
-                        settings.GhostBodyLimit,
+                        GhostEvidenceErrorCodes.SettingsResolveFailed,
+                        resolveFailReason,
+                        DivergenceSettings.DefaultGhostBodyLimit,
                         null,
-                        environment);
+                        environment,
+                        provenance);
                 }
                 else
                 {
-                    document = build.Document;
+                    var search = new EpsilonSearch(
+                        effectiveSearchSettings,
+                        identity.TargetBodyId,
+                        identity.SearchAxis,
+                        identity.Strategy);
+                    _liveSearch = search;
+                    var bodies = TowerProbeRequestFactory.CreateBaseline(entry.StepCount).Bodies;
+                    var scales = new float[bodies.Length];
+                    for (var i = 0; i < bodies.Length; i++)
+                    {
+                        var s = bodies[i].Size;
+                        scales[i] = Mathf.Max(s.x, Mathf.Max(s.y, s.z));
+                    }
+
+                    var runner = new EpsilonSearchRunner();
+                    // Unity MonoBehaviour nested-coroutine semantics pump runner.Run fully,
+                    // including per-frame WaitForSceneCleanup yields.
+                    yield return runner.Run(
+                        search,
+                        bodies,
+                        entry.StepCount,
+                        settings.ToThresholds(),
+                        scales);
+
+                    _liveSearch = null;
+                    searchResult = runner.LastResult;
+                    Debug.Log(GhostEvidenceWriter.FormatHonestSearchReport(
+                        searchResult,
+                        searchResult.Succeeded));
+
+                    var build = GhostEvidenceBuilder.Build(
+                        searchResult,
+                        identity,
+                        settings,
+                        scales,
+                        null,
+                        environment,
+                        provenance);
+                    if (!build.Succeeded || build.Document == null)
+                    {
+                        document = GhostEvidenceBuilder.CreateFailureDocument(
+                            searchResult,
+                            identity,
+                            searchResult.Succeeded
+                                ? GhostEvidenceErrorCodes.BuildFailed
+                                : GhostEvidenceBuilder.ResolveSearchErrorCode(searchResult.ErrorReason),
+                            build.ErrorReason ?? searchResult.ErrorReason,
+                            settings.GhostBodyLimit,
+                            null,
+                            environment,
+                            provenance);
+                    }
+                    else
+                    {
+                        document = build.Document;
+                    }
                 }
 
                 Debug.Log(GhostEvidenceReport.Format(document));

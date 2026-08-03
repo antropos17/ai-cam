@@ -106,6 +106,24 @@ namespace BugCam.Core
         public const int DefaultLadderPointCount = 12;
 
         // ---------------------------------------------------------------------------------
+        // Block 2.2.1 A1 — search-entry validation bounds (docs/CONTRACT-2.2.1.md table)
+        // ---------------------------------------------------------------------------------
+
+        // 1e-6 m. Why: the Block 1.1 repeatability gate — below it a perturbation is
+        // indistinguishable from measurement noise, so a search floor under this bound
+        // cannot produce an honest threshold.
+        public const float MinSearchEpsilonFloorMetres = 1e-6f;
+
+        // 1 m. Why: a perturbation larger than 1 m is not "small" — the product measures
+        // sensitivity to small input changes, not gross scene rearrangement.
+        public const float MaxSearchEpsilonCeilingMetres = 1f;
+
+        // 1.001. Why: below this ceiling/floor ratio the range is degenerate for the
+        // required 12-point log-uniform ladder (per-point step becomes numerically
+        // meaningless).
+        public const float MinSearchCeilingToFloorRatio = 1.001f;
+
+        // ---------------------------------------------------------------------------------
         // Blocks 1.5 / 2.1 — evidence
         // ---------------------------------------------------------------------------------
 
