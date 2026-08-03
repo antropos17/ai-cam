@@ -229,6 +229,69 @@ namespace BugCam.Tests
         }
 
         [Test]
+        public void FullyOccludedBestCandidateMustYieldLowVerdictDespiteHighRankingScore()
+        {
+            // Regression pin for the 2026-08-03 calibration finding: the affected body is fully
+            // enclosed by an occluder box, so EVERY candidate has visibility exactly 0 — yet the
+            // in-frustum term alone keeps the ranking score per body high (~0.96 at defaults).
+            // The old total-score gate passed this as OK; the occlusion-coverage gate must not.
+            const int stepCount = 6;
+            var baselinePositions = new[]
+            {
+                new Vector3(0f, 3f, 0f),
+                new Vector3(0f, 3f, 2f),
+            };
+            var perturbedPositions = new[]
+            {
+                new Vector3(0f, 3f, 2f),
+                new Vector3(0f, 3f, 2f),
+            };
+
+            var stableIds = new[] { 1, 2 };
+            var baseline = BuildRunResultSuccess(
+                BuildStaticFrames(stepCount, baselinePositions), stableIds, 0f, stepCount);
+            var perturbed = BuildRunResultSuccess(
+                BuildStaticFrames(stepCount, perturbedPositions), stableIds, 2f, stepCount);
+
+            var divergenceType = Type.GetType("BugCam.Core.DivergenceEngine, BugCam.Core");
+            var runResultType = Type.GetType("BugCam.Core.RunResult, BugCam.Core");
+            var analyze = divergenceType.GetMethod(
+                "Analyze",
+                new[] { runResultType, runResultType, typeof(float[]) });
+            var divergence = analyze.Invoke(null, new object[] { baseline, perturbed, null });
+            Assert.That(Prop<bool>(divergence, "HasSignificantDivergence"), Is.True);
+
+            // Body 2 is a 5 m box centred on body 1's perturbed position: body 1's whole AABB
+            // (and its 9 sample points) sit strictly inside it, so every sample ray from every
+            // candidate is blocked and visibility is exactly 0 everywhere.
+            var sizes = new[] { Vector3.one, Vector3.one * 5f };
+
+            var settingsType = Type.GetType("BugCam.Core.DivergenceSettings, BugCam.Core");
+            var settings = settingsType.GetMethod("CreateDefault", BindingFlags.Public | BindingFlags.Static)
+                .Invoke(null, null);
+
+            var result = InvokePlan(baseline, perturbed, divergence, sizes, settings);
+            Assert.That(Prop<bool>(result, "Succeeded"), Is.True);
+
+            Assert.That(
+                Prop<float>(result, "OcclusionCoveragePerBody"),
+                Is.EqualTo(0f),
+                "Fully-enclosed affected body must have zero occlusion coverage.");
+            Assert.That(Prop<string>(result, "Verdict"), Is.EqualTo("EVIDENCE COVERAGE: LOW"));
+            Assert.That(Prop<bool>(result, "HasAdequateCoverage"), Is.False);
+
+            // The point of the fix: the ranking score alone would still have cleared the gate.
+            var minCoverage = (float)settingsType
+                .GetProperty("MinEvidenceCoverageScore")
+                .GetValue(settings);
+            Assert.That(
+                Prop<float>(result, "BestScorePerBody"),
+                Is.GreaterThan(minCoverage),
+                "Fixture must keep the ranking score above the gate — otherwise it does not " +
+                "demonstrate that the verdict now gates on coverage rather than score.");
+        }
+
+        [Test]
         public void PlanFailsHonestlyWithNoFabricationWhenThereIsNoSignificantDivergence()
         {
             var settingsType = Type.GetType("BugCam.Core.DivergenceSettings, BugCam.Core");

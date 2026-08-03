@@ -10,7 +10,7 @@ Everything else in SPEC.md (CI, attribution, capsule viewer, subscription) is ba
 
 ### Block 1.1 — Scene & harness
 - Unity 6.3 LTS URP project `BugCam`, editor `6000.3.20f1` or newer within 6.3 — never 6.5 (rationale in `STATUS.md` Decisions log). Demo scene = test scene = `Assets/BugCam/Tests/TowerScene.unity`: tower of 40–60 Rigidbody cubes + one projectile/impulse, generated procedurally by an Editor menu item (no hand-authored `.unity`). Tune for sensitivity (tall, narrow base, low friction).
-- `SimulationHarness`: Simulation Mode = Script; local `PhysicsScene`; run = N × `Simulate(0.02f)`; clone scene into isolated physics world from saved initial state. PhysicsScene is recreated per run by default.
+- `SimulationHarness`: Simulation Mode = Script; local `PhysicsScene`; run = N × `Simulate(0.02f)` — note the effective step is float(0.02) = `0.0199999921` s, bit-identical to the editor's serialized fixed timestep `2822399/141120000` (measured live 2026-08-03); "0.02 s" in prose always means this float value, not an exact decimal. Clone scene into isolated physics world from saved initial state. PhysicsScene is recreated per run by default.
 - Physics simulation threading: Unity 6.3 exposes a multi-threaded / single-threaded simulation switch. Its exact API and settings name is read off the installed `6000.3.20f1` editor (Project Settings → Physics, cross-checked against that editor's Scripting API reference) — never guessed from memory. Its value joins the physics settings snapshot, and `DeterminismProbe` prints the mode it ran under. No mode is preferred in advance: the Block 1.1 measurement decides, not this plan.
 - VERIFY: two identical runs match within 1e-6 per component (the gate). Report numbers, not pass/fail: `bitwiseEqual`, `maxComponentDelta`, `firstDivergingStep`, `firstDivergingBody`, `managedBytesAllocatedInLoop`, `simulationThreadingMode`. Run order A, B, A′ (B = perturbed) so cross-run state leakage is visible. Repeat once after an Editor restart to separate in-session from cross-session determinism. **Run the whole probe in BOTH threading modes and record `maxComponentDelta` for each** — single-threaded removes solver thread ordering as a variable, and the delta between the two modes is a measured finding for `STATUS.md` and for the README caveat "solver effects exist". If the gate fails: fix instantiation order, then record it as a finding — do not hide it.
 
@@ -34,7 +34,7 @@ Everything else in SPEC.md (CI, attribution, capsule viewer, subscription) is ba
 | `SceneScoreThreshold` | — | weighted-sum gate |
 | `SustainedSteps` = 5 | steps | consecutive steps required |
 | `WeightPosition` / `WeightRotation` / `WeightVelocity` / `WeightSleep` | — | weights of the Scene Divergence Score |
-| `MinEvidenceCoverageScore` | — | Block 2.1 honest-verdict gate |
+| `MinEvidenceCoverageScore` = 0.25 | 0..1 | Block 2.1 honest-verdict gate over camera 1's **occlusion coverage** (visible sample-point fraction averaged over affected bodies) — distinct from the ranking score. **PROVISIONAL threshold** (2026-08-03): the calibration measured only a tight "good" cluster (0.354–0.376) and one zero (0.000); the intermediate 0.1–0.3 region ("barely visible") was never measured, so 0.25 separates the observed extremes but is not a calibrated boundary — refine on a partial-occlusion scene before treating LOW/OK near 0.25 as meaningful |
 
 Epsilon search (Block 1.4) — same asset, per `CLAUDE.md` "all thresholds live in one `DivergenceSettings`":
 
@@ -61,8 +61,7 @@ Evidence (Blocks 1.5, 2.1) — same asset:
 | `EvidenceCameraFarClip` = 500 | metres | far clip plane for candidate frustum construction |
 | `EvidenceRenderWidth` / `EvidenceRenderHeight` = 1920×1080 | pixels | canonical resolution for pixel-space scoring only (matches Block 2.2 landscape export) |
 | `EvidenceEventBoundsRadiusMultiplier` = 2.5 | × bounds extents | candidate sphere distance from the divergence-event bounds center |
-| `WeightCameraOrthogonality` / `WeightContactProximity` / `WeightTrajectoryAlignment` = 100 / 10 / 1 | — | cameras 2–4 ranking weights approximating criteria (a)/(b)/(c) in priority order |
-| `ScreenSpaceSeparationNormalizer` = 500 | pixels | divisor bringing raw pixel separation onto the same 0..1-ish scale as the other terms |
+| ~~`WeightCameraOrthogonality` / `WeightContactProximity` / `WeightTrajectoryAlignment`~~, ~~`ScreenSpaceSeparationNormalizer`~~ | — | REMOVED 2026-08-03 (live calibration): contact proximity was constant across the single-radius candidate sphere, trajectory alignment never influenced a winner, screen-space separation was 4–5 orders below the other terms at the first-divergence frame. Cameras 2–4 rank by orthogonality alone; a single ranking term carries no weight field. |
 
 Rules:
 - Every default value carries a one-line comment stating **why that number**, not merely what it is.
@@ -113,18 +112,18 @@ Console output with threshold / first divergence frame / spread / amplification 
 - Sphere radius derives from the divergence-event bounds only — not the union of all affected bodies.
 - Candidates below the ground plane are discarded before scoring.
 
-**Scoring** — per candidate, summed over affected bodies:
+**Scoring** — per candidate, summed over affected bodies (amended 2026-08-03 after live calibration):
 - in-frustum: `GeometryUtility.CalculateFrustumPlanes` + `GeometryUtility.TestPlanesAABB`
 - occlusion: fractional, 9 raycasts per body (AABB centre + 8 corners), score = hits / 9. Never binary.
-- screen-space separation between baseline and perturbed positions via `Camera.WorldToViewportPoint`, measured in pixels
 - centrality penalty for bodies near the frame edges
 - ties broken strictly by candidate index, never by float comparison
+- ~~screen-space separation in pixels~~ — REMOVED: at the first-divergence frame the physical offset is ~1 mm, sub-pixel at 1920 from candidate distance; the measured term (0.00036–0.00074 total over 21 bodies) sat 4–5 orders below the other terms and never influenced selection. A separation term scored at the max-spread frame is a candidate for the RetroPlayer follow-up, not part of v0.1 scoring.
 
-**Winners.**
+**Winners** (amended 2026-08-03 after live calibration).
 - Camera 1 = highest score.
-- Cameras 2–4: filter to the top 25% by score FIRST, then optimize within the survivors for (a) orthogonality to camera 1, (b) contact proximity, (c) trajectory alignment. Constraint-then-optimize, in that order.
+- Cameras 2–4: filter to the top 25% of surviving (above-ground) candidates by score FIRST, then pick the most orthogonal to camera 1 among the survivors (orthogonality descending, candidate index ascending on ties). The original criteria (b) contact proximity and (c) trajectory alignment were measured dead on live data — contact is constant by construction while all candidates share one sphere radius, and trajectory never outweighed observed orthogonality gaps (winners identical with its weight at 1 vs 0) — and were removed rather than left as decorative weights. Close-up/contact cameras require contact data (backlog per `CLAUDE.md`) plus multi-radius candidate generation — SPEC §7 backlog, not v0.1.
 
-**Honest verdict (required).** If the best candidate score falls below `DivergenceSettings.MinEvidenceCoverageScore`, output `EVIDENCE COVERAGE: LOW` with the best score, the count of affected bodies visible, and the reason. This is a valid result in the same sense as `STABLE WITHIN TESTED RANGE` — do not emit four poor cameras instead.
+**Honest verdict (required).** If camera 1's **occlusion coverage** — the fraction of unoccluded sample points averaged over affected bodies (`OcclusionCoveragePerBody`, 0..1) — falls below `DivergenceSettings.MinEvidenceCoverageScore`, output `EVIDENCE COVERAGE: LOW` with the coverage value, the count of affected bodies visible, and the reason. The gate deliberately ignores the ranking score: the in-frustum term alone can clear any total-score threshold while every affected body is fully occluded (measured live 2026-08-03). This is a valid result in the same sense as `STABLE WITHIN TESTED RANGE` — do not emit four poor cameras instead.
 
 **Manifest** (`camera-plan.json`, written when the capsule lands on Day 3): algorithm version, candidate count N, and the score of EVERY candidate including the rejected ones — provenance requires the losers. Per chosen camera: bodies in frame, distances, fractional occlusion values, final score.
 
@@ -132,7 +131,7 @@ Console output with threshold / first divergence frame / spread / amplification 
 
 - VERIFY: selection is reproducible bit-for-bit by a third party from the same recorded runs — re-running selection over identical recorded trajectories yields identical candidate scores, identical winner indices, and an identical `camera-plan.json`.
 
-**Reproducibility means no live scene.** "Reproducible... by a third party from the same recorded runs" means the algorithm is a pure post-process over `RunResult` + `DivergenceResult` + per-body extents — occlusion uses ray-vs-AABB math over recorded positions, never `Physics.Raycast` against live colliders, and the frustum test builds its view-projection matrix directly (`Matrix4x4`) rather than from a scene `Camera` GameObject. Bodies are treated as world-axis-aligned boxes at each queried frame (position ± half-extent from `SimulationBodyDefinition.Size`), not rotation-aware OBBs — a documented simplification. "Contact proximity" (criterion b) approximates to distance-from-event-bounds-center, since collision-pair/contact data is backlog per `CLAUDE.md` (not part of the 14-float stride) and therefore unavailable to score against.
+**Reproducibility means no live scene.** "Reproducible... by a third party from the same recorded runs" means the algorithm is a pure post-process over `RunResult` + `DivergenceResult` + per-body extents — occlusion uses ray-vs-AABB math over recorded positions, never `Physics.Raycast` against live colliders, and the frustum test builds its view-projection matrix directly (`Matrix4x4`) rather than from a scene `Camera` GameObject. Bodies are treated as world-axis-aligned boxes at each queried frame (position ± half-extent from `SimulationBodyDefinition.Size`), not rotation-aware OBBs — a documented simplification. (Historical note: "contact proximity" was first approximated as distance-from-event-bounds-center; the 2026-08-03 calibration showed that distance is constant across the single-radius candidate sphere, so the criterion was removed rather than kept as a dead term — see **Winners** above.)
 
 **Block 2.1 landing scope.** The first commit lands `EvidenceCameras.cs` (candidate generation, scoring, honest verdict) + `camera-plan.json` schema/writer + EditMode VERIFY — everything checkable in batchmode without a live Editor. `RetroPlayer` (scrub/slow-mo playback) and the actual 2×2 viewport/RenderTexture compositing are deferred to a follow-up commit that needs a live GPU Editor session to verify, the same standard Block 1.5's screenshot capture was held to after the `#1F1F24` blank-PNG correction. Do not claim the deferred pieces as done.
 

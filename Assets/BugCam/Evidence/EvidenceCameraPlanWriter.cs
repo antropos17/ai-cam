@@ -82,6 +82,9 @@ namespace BugCam.Evidence
 
             if (plan.Succeeded)
             {
+                // occlusionCoveragePerBody is the verdict gate; bestScorePerBody is the ranking
+                // score kept for provenance — the two are deliberately distinct (2026-08-03).
+                WriteFloat(sb, "occlusionCoveragePerBody", plan.OcclusionCoveragePerBody);
                 WriteFloat(sb, "bestScorePerBody", plan.BestScorePerBody);
                 WriteInt(sb, "firstDivergenceFrame", plan.FirstDivergenceFrame);
                 sb.Append(",\"eventBounds\":{");
@@ -91,6 +94,7 @@ namespace BugCam.Evidence
             }
             else
             {
+                WriteNull(sb, "occlusionCoveragePerBody");
                 WriteNull(sb, "bestScorePerBody");
                 WriteNull(sb, "firstDivergenceFrame");
                 WriteNull(sb, "eventBounds");
@@ -148,7 +152,6 @@ namespace BugCam.Evidence
             WriteBool(sb, "rejectedBelowGroundPlane", candidate.RejectedBelowGroundPlane);
             WriteFloat(sb, "inFrustumScore", candidate.InFrustumScore);
             WriteFloat(sb, "visibilityScore", candidate.VisibilityScore);
-            WriteFloat(sb, "separationScore", candidate.SeparationScore);
             WriteFloat(sb, "centralityPenalty", candidate.CentralityPenalty);
             WriteFloat(sb, "totalScore", candidate.TotalScore);
             sb.Append('}');
@@ -160,21 +163,15 @@ namespace BugCam.Evidence
             WriteInt(sb, "slot", winner.Slot, true);
             WriteInt(sb, "candidateIndex", winner.CandidateIndex);
 
-            // Camera 1 (slot 1) is chosen by raw TotalScore, not the (a)/(b)/(c) ranking scheme —
-            // its ranking-term fields are not applicable. Honest null, not a fabricated zero.
+            // Camera 1 (slot 1) is chosen by raw TotalScore, not the orthogonality ranking —
+            // its orthogonality field is not applicable. Honest null, not a fabricated zero.
             if (winner.Slot == 1)
             {
                 WriteNull(sb, "orthogonalityToCamera1");
-                WriteNull(sb, "contactProximity");
-                WriteNull(sb, "trajectoryAlignment");
-                WriteNull(sb, "rankScore");
             }
             else
             {
                 WriteFloat(sb, "orthogonalityToCamera1", winner.OrthogonalityToCamera1);
-                WriteFloat(sb, "contactProximity", winner.ContactProximity);
-                WriteFloat(sb, "trajectoryAlignment", winner.TrajectoryAlignment);
-                WriteFloat(sb, "rankScore", winner.RankScore);
             }
 
             sb.Append('}');

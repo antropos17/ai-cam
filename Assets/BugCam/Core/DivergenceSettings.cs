@@ -64,14 +64,17 @@ namespace BugCam.Core
         // drift, so it counts as much as a full position-threshold breach.
         public const float DefaultWeightSleep = 1f;
 
-        // 0.5. Why: RATIFIED in Block 2.1. EvidenceCameras.PlanCandidateScore sums, per affected
-        // body, an in-frustum term (0 or 1) plus a visibility term (0..1) minus a centrality
-        // penalty; the honest-verdict gate compares that sum averaged over AffectedBodyCount
-        // against this constant. 0.5 requires roughly "half a body's worth" of combined
-        // in-frustum + unoccluded coverage on average — clearly below a fully-framed, unoccluded
-        // single-body candidate (~2.0) and clearly above a mostly-occluded or out-of-frustum one,
-        // so EVIDENCE COVERAGE: LOW fires only when the best candidate is a genuinely poor shot.
-        public const float DefaultMinEvidenceCoverageScore = 0.5f;
+        // 0.25. Why: RE-RATIFIED in the 2026-08-03 live calibration. The gate now compares
+        // camera 1's OCCLUSION COVERAGE — the fraction of unoccluded sample points averaged over
+        // affected bodies (VisibilityScore / AffectedBodyCount, 0..1) — never the total ranking
+        // score. The previous total-score gate at 0.5 was degenerate: the in-frustum term alone
+        // contributed ~0.83–0.98 per body, so a candidate with visibility 0.00 (measured live:
+        // candidate 0, one white face filling the frame, zero affected bodies visible) passed as
+        // OK. Calibrated data on the dense 49-body tower: good cameras cluster at 0.354–0.376
+        // coverage, the fully-occluded one at 0.000. 0.25 sits at roughly two thirds of the
+        // best-known-good coverage — LOW fires decisively for occluded shots while a one-third
+        // visible dense-scene shot still passes.
+        public const float DefaultMinEvidenceCoverageScore = 0.25f;
 
         // ---------------------------------------------------------------------------------
         // Block 1.4 — adaptive epsilon search
@@ -158,25 +161,18 @@ namespace BugCam.Core
         // nearby bodies becomes physically implausible.
         public const float DefaultEvidenceEventBoundsRadiusMultiplier = 2.5f;
 
-        // 100 / 10 / 1. Why: docs/PLAN.md Block 2.1 ranks cameras 2-4 by "(a) orthogonality to
-        // camera 1, (b) contact proximity, (c) trajectory alignment ... in that order". Each term
-        // is normalized to roughly 0..1 per candidate; weighting them 100:10:1 makes (a) dominate
-        // the ranking outcome in every case except a near-exact tie on orthogonality, and (b)
-        // dominate over (c) the same way, approximating strict lexicographic order with a single
-        // continuous score and a strict index tie-break (never a float equality compare).
-        public const float DefaultWeightCameraOrthogonality = 100f;
-
-        public const float DefaultWeightContactProximity = 10f;
-
-        public const float DefaultWeightTrajectoryAlignment = 1f;
-
-        // 500 px. Why: PLAN's screen-space-separation score is summed in pixels across affected
-        // bodies, while the in-frustum and visibility terms are each 0..1 per body. Dividing the
-        // raw pixel sum by 500 brings a "clearly separated" candidate (roughly 250-750 px per
-        // body at DefaultEvidenceRenderWidth) into the same order of magnitude as those terms, so
-        // separation contributes to camera 1's ranking without a unit-scale mismatch drowning out
-        // in-frustum/visibility.
-        public const float DefaultScreenSpaceSeparationNormalizer = 500f;
+        // REMOVED in the 2026-08-03 live calibration (no dead weights may remain):
+        // WeightCameraOrthogonality/WeightContactProximity/WeightTrajectoryAlignment (100/10/1)
+        // and ScreenSpaceSeparationNormalizer (500). Measured on the live tower run: contact
+        // proximity was constant across ALL candidates by construction (every candidate sits on
+        // the same sphere radius, 1/(1+10.92)=0.0839 each), trajectory alignment never influenced
+        // a single winner (identical winners with weight 1 vs 0; adjacent orthogonality rank gaps
+        // >= 3 units vs a <= 1 trajectory range), and screen-space separation contributed
+        // 0.00036–0.00074 total (~0.29 px over 21 bodies) — 4–5 orders below the other terms,
+        // because the offset at the first sustained divergence is ~1 mm, sub-pixel at 1920 from
+        // ~11 m. Cameras 2–4 rank by orthogonality to camera 1 alone (a single scale factor on a
+        // single term cannot change an ordering, so it carries no weight field either). Close-up
+        // contact cameras (SPEC §7) need contact data + multi-radius candidates — backlog.
 
         [Header("Block 1.3 — per-body gates")]
         [SerializeField]
@@ -241,7 +237,7 @@ namespace BugCam.Core
         private int ghostBodyLimit = DefaultGhostBodyLimit;
 
         [SerializeField]
-        [Tooltip("Dimensionless. Below this best-candidate score the verdict is EVIDENCE COVERAGE: LOW.")]
+        [Tooltip("0..1. Camera 1 occlusion coverage (visible sample-point fraction per affected body) below this is EVIDENCE COVERAGE: LOW.")]
         private float minEvidenceCoverageScore = DefaultMinEvidenceCoverageScore;
 
         [SerializeField]
@@ -285,22 +281,6 @@ namespace BugCam.Core
         [Tooltip("Candidate distance from event bounds center = bounds.extents.magnitude x this.")]
         private float evidenceEventBoundsRadiusMultiplier = DefaultEvidenceEventBoundsRadiusMultiplier;
 
-        [SerializeField]
-        [Tooltip("Cameras 2-4 ranking weight for orthogonality to camera 1 (PLAN criterion a).")]
-        private float weightCameraOrthogonality = DefaultWeightCameraOrthogonality;
-
-        [SerializeField]
-        [Tooltip("Cameras 2-4 ranking weight for contact proximity (PLAN criterion b).")]
-        private float weightContactProximity = DefaultWeightContactProximity;
-
-        [SerializeField]
-        [Tooltip("Cameras 2-4 ranking weight for trajectory alignment (PLAN criterion c).")]
-        private float weightTrajectoryAlignment = DefaultWeightTrajectoryAlignment;
-
-        [SerializeField]
-        [Tooltip("Divisor bringing raw pixel screen-space separation into 0..1-ish scale.")]
-        private float screenSpaceSeparationNormalizer = DefaultScreenSpaceSeparationNormalizer;
-
         /// <summary>Metres. The "meaningfully affected" condition.</summary>
         public float PerBodyPositionThreshold => perBodyPositionThreshold;
 
@@ -341,7 +321,10 @@ namespace BugCam.Core
 
         public int GhostBodyLimit => ghostBodyLimit;
 
-        /// <summary>Block 2.1 honest-verdict gate.</summary>
+        /// <summary>
+        /// Block 2.1 honest-verdict gate over camera 1's occlusion coverage — the fraction of
+        /// unoccluded sample points averaged over affected bodies. Distinct from the ranking score.
+        /// </summary>
         public float MinEvidenceCoverageScore => minEvidenceCoverageScore;
 
         public int EvidenceCandidateCount => evidenceCandidateCount;
@@ -369,14 +352,6 @@ namespace BugCam.Core
 
         /// <summary>Candidate distance multiplier applied to the event bounds extents magnitude.</summary>
         public float EvidenceEventBoundsRadiusMultiplier => evidenceEventBoundsRadiusMultiplier;
-
-        public float WeightCameraOrthogonality => weightCameraOrthogonality;
-
-        public float WeightContactProximity => weightContactProximity;
-
-        public float WeightTrajectoryAlignment => weightTrajectoryAlignment;
-
-        public float ScreenSpaceSeparationNormalizer => screenSpaceSeparationNormalizer;
 
         /// <summary>
         /// A fresh in-memory instance carrying the code defaults. Used by tests and by any

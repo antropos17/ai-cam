@@ -13,7 +13,6 @@ namespace BugCam.Evidence
             bool rejectedBelowGroundPlane,
             float inFrustumScore,
             float visibilityScore,
-            float separationScore,
             float centralityPenalty,
             float totalScore)
         {
@@ -22,7 +21,6 @@ namespace BugCam.Evidence
             RejectedBelowGroundPlane = rejectedBelowGroundPlane;
             InFrustumScore = inFrustumScore;
             VisibilityScore = visibilityScore;
-            SeparationScore = separationScore;
             CentralityPenalty = centralityPenalty;
             TotalScore = totalScore;
         }
@@ -40,33 +38,29 @@ namespace BugCam.Evidence
         /// <summary>Sum over affected bodies of (1 - fractional occlusion).</summary>
         public float VisibilityScore { get; }
 
-        /// <summary>Sum over affected bodies of baseline/perturbed screen-space pixel separation, normalized.</summary>
-        public float SeparationScore { get; }
-
         /// <summary>Sum over affected bodies of the frame-edge distance penalty (unweighted).</summary>
         public float CentralityPenalty { get; }
 
-        /// <summary>InFrustumScore + VisibilityScore + SeparationScore - WeightEvidenceCentrality * CentralityPenalty.</summary>
+        /// <summary>InFrustumScore + VisibilityScore - WeightEvidenceCentrality * CentralityPenalty.</summary>
         public float TotalScore { get; }
     }
 
-    /// <summary>One of cameras 2-4: a candidate plus the (a)/(b)/(c) terms that ranked it.</summary>
+    /// <summary>
+    /// One of cameras 2-4: a candidate plus the orthogonality that ranked it. Contact proximity
+    /// and trajectory alignment were removed in the 2026-08-03 calibration — both were measured
+    /// dead (contact constant across the single-radius candidate sphere; trajectory never
+    /// outweighing orthogonality gaps). Close-up contact cameras are backlog (SPEC §7).
+    /// </summary>
     public readonly struct EvidenceCameraWinner
     {
         public EvidenceCameraWinner(
             int slot,
             int candidateIndex,
-            float orthogonalityToCamera1,
-            float contactProximity,
-            float trajectoryAlignment,
-            float rankScore)
+            float orthogonalityToCamera1)
         {
             Slot = slot;
             CandidateIndex = candidateIndex;
             OrthogonalityToCamera1 = orthogonalityToCamera1;
-            ContactProximity = contactProximity;
-            TrajectoryAlignment = trajectoryAlignment;
-            RankScore = rankScore;
         }
 
         /// <summary>1-based camera slot; slot 1 is always the highest raw-score candidate.</summary>
@@ -76,15 +70,6 @@ namespace BugCam.Evidence
 
         /// <summary>0 (same axis as camera 1) .. 1 (perpendicular). Always 0 for slot 1 itself.</summary>
         public float OrthogonalityToCamera1 { get; }
-
-        /// <summary>Criterion (b) approximation: 1 / (1 + distance to the event bounds center).</summary>
-        public float ContactProximity { get; }
-
-        /// <summary>Criterion (c): 0 (aligned with average affected-body velocity) .. 1 (perpendicular).</summary>
-        public float TrajectoryAlignment { get; }
-
-        /// <summary>WeightCameraOrthogonality*Orthogonality + WeightContactProximity*ContactProximity + WeightTrajectoryAlignment*TrajectoryAlignment.</summary>
-        public float RankScore { get; }
     }
 
     /// <summary>Outcome of <see cref="EvidenceCameras.Plan"/> — the single source of truth for camera-plan.json.</summary>
@@ -111,6 +96,7 @@ namespace BugCam.Evidence
             EvidenceCameraWinner[] winners,
             bool hasAdequateCoverage,
             float bestScorePerBody,
+            float occlusionCoveragePerBody,
             string verdict)
         {
             Succeeded = succeeded;
@@ -125,6 +111,7 @@ namespace BugCam.Evidence
             Winners = winners ?? EmptyWinners;
             HasAdequateCoverage = hasAdequateCoverage;
             BestScorePerBody = bestScorePerBody;
+            OcclusionCoveragePerBody = occlusionCoveragePerBody;
             Verdict = verdict ?? string.Empty;
         }
 
@@ -153,8 +140,15 @@ namespace BugCam.Evidence
         /// <summary>False when the honest verdict is EVIDENCE COVERAGE: LOW.</summary>
         public bool HasAdequateCoverage { get; }
 
-        /// <summary>Camera 1's TotalScore divided by AffectedBodyIds.Length — the honest-verdict gate value.</summary>
+        /// <summary>Camera 1's TotalScore divided by AffectedBodyIds.Length — informational only, NOT the verdict gate.</summary>
         public float BestScorePerBody { get; }
+
+        /// <summary>
+        /// Camera 1's occlusion coverage: fraction of unoccluded sample points averaged over
+        /// affected bodies (VisibilityScore / AffectedBodyIds.Length, 0..1). This — not the
+        /// ranking score — is what the EVIDENCE COVERAGE verdict gates on.
+        /// </summary>
+        public float OcclusionCoveragePerBody { get; }
 
         /// <summary><see cref="EvidenceCameras.VerdictLow"/> or <see cref="EvidenceCameras.VerdictOk"/>.</summary>
         public string Verdict { get; }
@@ -163,7 +157,7 @@ namespace BugCam.Evidence
         {
             return new EvidenceCameraPlanResult(
                 false, errorReason, 0, 0, Vector3.zero, 0f, -1,
-                EmptyIds, EmptyCandidates, EmptyWinners, false, 0f, string.Empty);
+                EmptyIds, EmptyCandidates, EmptyWinners, false, 0f, 0f, string.Empty);
         }
 
         public static EvidenceCameraPlanResult Success(
@@ -177,12 +171,13 @@ namespace BugCam.Evidence
             EvidenceCameraWinner[] winners,
             bool hasAdequateCoverage,
             float bestScorePerBody,
+            float occlusionCoveragePerBody,
             string verdict)
         {
             return new EvidenceCameraPlanResult(
                 true, string.Empty, algorithmVersion, candidateCount, eventBoundsCenter,
                 eventBoundsRadius, firstDivergenceFrame, affectedBodyIds, candidates, winners,
-                hasAdequateCoverage, bestScorePerBody, verdict);
+                hasAdequateCoverage, bestScorePerBody, occlusionCoveragePerBody, verdict);
         }
     }
 
@@ -195,7 +190,10 @@ namespace BugCam.Evidence
     /// </summary>
     public static class EvidenceCameras
     {
-        public const int AlgorithmVersion = 1;
+        // v2 (2026-08-03 calibration): verdict gates on occlusion coverage instead of total
+        // score; screen-space separation removed from candidate scoring; cameras 2-4 rank by
+        // orthogonality alone. v1 plans are not comparable to v2 plans.
+        public const int AlgorithmVersion = 2;
 
         public const string VerdictLow = "EVIDENCE COVERAGE: LOW";
 
@@ -253,8 +251,6 @@ namespace BugCam.Evidence
             var sphereRadius = Mathf.Max(eventBounds.BoundingRadius, 1e-4f) *
                                settings.EvidenceEventBoundsRadiusMultiplier;
             var aspect = (float)settings.EvidenceRenderWidth / settings.EvidenceRenderHeight;
-            var averageVelocityDirection = AverageVelocityDirection(
-                perturbedRun.StateFrames, frame, affectedIndices, stepCount, bodyCount);
 
             var candidates = new EvidenceCameraCandidateResult[candidateCount];
             var samplePoints = new Vector3[SamplePointsPerBody];
@@ -273,7 +269,7 @@ namespace BugCam.Evidence
                     // ground plane is y = 0, so a candidate at or below it is discarded before
                     // scoring (docs/PLAN.md Block 2.1: "Candidates below the ground plane are
                     // discarded before scoring").
-                    candidates[i] = new EvidenceCameraCandidateResult(i, position, true, 0f, 0f, 0f, 0f, 0f);
+                    candidates[i] = new EvidenceCameraCandidateResult(i, position, true, 0f, 0f, 0f, 0f);
                     continue;
                 }
 
@@ -286,7 +282,6 @@ namespace BugCam.Evidence
 
                 var inFrustumScore = 0f;
                 var visibilityScore = 0f;
-                var separationScore = 0f;
                 var centralityPenalty = 0f;
 
                 for (var a = 0; a < affectedIndices.Length; a++)
@@ -331,35 +326,26 @@ namespace BugCam.Evidence
 
                     var perturbedPos = PositionAtFrame(
                         perturbedRun.StateFrames, frame, bodyIndex, stepCount, bodyCount);
-                    var baselinePos = PositionAtFrame(
-                        baselineRun.StateFrames, frame, bodyIndex, stepCount, bodyCount);
 
                     var perturbedViewport = EvidenceCameraMath.WorldToViewport(
                         viewProjection, perturbedPos, out var perturbedInFront);
-                    var baselineViewport = EvidenceCameraMath.WorldToViewport(
-                        viewProjection, baselinePos, out var baselineInFront);
 
                     // A point behind the near plane produces inverted/garbage NDC — never fold
-                    // it into separation or centrality (0 contribution instead of a false
-                    // number). Such a body should also fail TestPlanesAABB above in the normal
-                    // case, but that is a separate, coarser test; guard this one directly too.
-                    if (perturbedInFront && baselineInFront)
+                    // it into centrality (0 contribution instead of a false number). Such a body
+                    // should also fail TestPlanesAABB above in the normal case, but that is a
+                    // separate, coarser test; guard this one directly too.
+                    if (perturbedInFront)
                     {
-                        var pixelDelta = new Vector2(
-                            (perturbedViewport.x - baselineViewport.x) * settings.EvidenceRenderWidth,
-                            (perturbedViewport.y - baselineViewport.y) * settings.EvidenceRenderHeight);
-                        separationScore += pixelDelta.magnitude / settings.ScreenSpaceSeparationNormalizer;
-
                         var centralityOffset = new Vector2(perturbedViewport.x - 0.5f, perturbedViewport.y - 0.5f);
                         centralityPenalty += centralityOffset.magnitude;
                     }
                 }
 
-                var totalScore = inFrustumScore + visibilityScore + separationScore -
+                var totalScore = inFrustumScore + visibilityScore -
                                   (settings.WeightEvidenceCentrality * centralityPenalty);
 
                 candidates[i] = new EvidenceCameraCandidateResult(
-                    i, position, false, inFrustumScore, visibilityScore, separationScore,
+                    i, position, false, inFrustumScore, visibilityScore,
                     centralityPenalty, totalScore);
 
                 // Strict greater-than: ties keep the lower index (ascending tie-break, never a
@@ -378,12 +364,18 @@ namespace BugCam.Evidence
             }
 
             var bestScorePerBody = bestScore / affectedIndices.Length;
-            var verdict = bestScorePerBody < settings.MinEvidenceCoverageScore
+
+            // The verdict gates on OCCLUSION COVERAGE — the fraction of unoccluded sample
+            // points averaged over affected bodies — never on the ranking score. The old
+            // total-score gate was degenerate: the in-frustum term alone cleared it, so a
+            // candidate with visibility 0.00 passed as OK (2026-08-03 live calibration).
+            var occlusionCoveragePerBody =
+                candidates[bestIndex].VisibilityScore / affectedIndices.Length;
+            var verdict = occlusionCoveragePerBody < settings.MinEvidenceCoverageScore
                 ? VerdictLow
                 : VerdictOk;
 
-            var winners = SelectWinners(
-                candidates, bestIndex, eventBounds, averageVelocityDirection, settings);
+            var winners = SelectWinners(candidates, bestIndex, eventBounds, settings);
 
             return EvidenceCameraPlanResult.Success(
                 AlgorithmVersion,
@@ -396,6 +388,7 @@ namespace BugCam.Evidence
                 winners,
                 verdict == VerdictOk,
                 bestScorePerBody,
+                occlusionCoveragePerBody,
                 verdict);
         }
 
@@ -403,7 +396,6 @@ namespace BugCam.Evidence
             EvidenceCameraCandidateResult[] candidates,
             int camera1Index,
             EvidenceBounds eventBounds,
-            Vector3 averageVelocityDirection,
             DivergenceSettings settings)
         {
             var survivorCount = 0;
@@ -422,11 +414,11 @@ namespace BugCam.Evidence
             var camera1Direction = (candidates[camera1Index].Position - eventBounds.Center).normalized;
 
             var winners = new EvidenceCameraWinner[Mathf.Min(4, survivorCount)];
-            // Camera 1 is chosen by raw TotalScore, not by the (a)/(b)/(c) ranking scheme used
-            // for cameras 2-4, so its ranking-term fields are not applicable here. Left as inert
-            // zeros in-memory; EvidenceCameraPlanWriter writes them as honest null for slot 1
+            // Camera 1 is chosen by raw TotalScore, not by the orthogonality ranking used for
+            // cameras 2-4, so its orthogonality field is not applicable here. Left as an inert
+            // zero in-memory; EvidenceCameraPlanWriter writes it as honest null for slot 1
             // rather than a fabricated zero (matches the repo's null + has* convention).
-            winners[0] = new EvidenceCameraWinner(1, camera1Index, 0f, 0f, 0f, 0f);
+            winners[0] = new EvidenceCameraWinner(1, camera1Index, 0f);
 
             // order[0] is always camera1Index (it is the max-TotalScore survivor by construction,
             // with the same ascending-index tie-break used to pick bestIndex above), so the top-
@@ -434,44 +426,31 @@ namespace BugCam.Evidence
             // backfill from beyond the cutoff.
             var sliceEnd = Mathf.Min(topCount, order.Length);
             var poolSize = Mathf.Max(0, sliceEnd - 1);
-            var rankedPool = new int[poolSize];
+
+            // Cameras 2-4 rank by orthogonality to camera 1 alone. Contact proximity and
+            // trajectory alignment were removed in the 2026-08-03 calibration: contact was
+            // constant across the single-radius candidate sphere (zero discriminating power by
+            // construction) and trajectory never outweighed observed orthogonality gaps. A weight
+            // on a single ranking term cannot change its ordering, so there is none.
+            var scored = new (int index, float orth)[poolSize];
             for (var i = 0; i < poolSize; i++)
             {
-                rankedPool[i] = order[i + 1];
-            }
-
-            var scored = new (int index, float orth, float contact, float traj, float rank)[poolSize];
-            for (var i = 0; i < poolSize; i++)
-            {
-                var candidateIndex = rankedPool[i];
-                var candidate = candidates[candidateIndex];
-                var direction = (candidate.Position - eventBounds.Center).normalized;
-
+                var candidateIndex = order[i + 1];
+                var direction = (candidates[candidateIndex].Position - eventBounds.Center).normalized;
                 var orthogonality = 1f - Mathf.Abs(Vector3.Dot(direction, camera1Direction));
-                var distanceToCenter = Vector3.Distance(candidate.Position, eventBounds.Center);
-                var contactProximity = 1f / (1f + distanceToCenter);
-                var forward = (eventBounds.Center - candidate.Position).normalized;
-                var trajectoryAlignment = averageVelocityDirection == Vector3.zero
-                    ? 0f
-                    : 1f - Mathf.Abs(Vector3.Dot(forward, averageVelocityDirection));
-
-                var rankScore =
-                    (settings.WeightCameraOrthogonality * orthogonality) +
-                    (settings.WeightContactProximity * contactProximity) +
-                    (settings.WeightTrajectoryAlignment * trajectoryAlignment);
-
-                scored[i] = (candidateIndex, orthogonality, contactProximity, trajectoryAlignment, rankScore);
+                scored[i] = (candidateIndex, orthogonality);
             }
 
-            // Selection sort by rank descending, index ascending on ties — small N (<= candidate
-            // count * EvidenceTopScoreFraction), determinism matters more than asymptotic cost.
+            // Selection sort by orthogonality descending, index ascending on ties — small N
+            // (<= candidate count * EvidenceTopScoreFraction), determinism matters more than
+            // asymptotic cost.
             for (var i = 0; i < scored.Length; i++)
             {
                 var bestJ = i;
                 for (var j = i + 1; j < scored.Length; j++)
                 {
-                    if (scored[j].rank > scored[bestJ].rank ||
-                        (scored[j].rank == scored[bestJ].rank && scored[j].index < scored[bestJ].index))
+                    if (scored[j].orth > scored[bestJ].orth ||
+                        (scored[j].orth == scored[bestJ].orth && scored[j].index < scored[bestJ].index))
                     {
                         bestJ = j;
                     }
@@ -484,8 +463,7 @@ namespace BugCam.Evidence
             for (var slot = 0; slot < slotsToFill; slot++)
             {
                 var s = scored[slot];
-                winners[slot + 1] = new EvidenceCameraWinner(
-                    slot + 2, s.index, s.orth, s.contact, s.traj, s.rank);
+                winners[slot + 1] = new EvidenceCameraWinner(slot + 2, s.index, s.orth);
             }
 
             if (slotsToFill < winners.Length - 1)
@@ -513,19 +491,6 @@ namespace BugCam.Evidence
                 return scoreCompare != 0 ? scoreCompare : a.CompareTo(b);
             });
             return survivors.ToArray();
-        }
-
-        private static Vector3 AverageVelocityDirection(
-            float[] frames, int frame, int[] affectedIndices, int stepCount, int bodyCount)
-        {
-            var sum = Vector3.zero;
-            for (var i = 0; i < affectedIndices.Length; i++)
-            {
-                var offset = StateRecorder.IndexOf(0, frame, affectedIndices[i], stepCount, bodyCount);
-                sum += new Vector3(frames[offset + 7], frames[offset + 8], frames[offset + 9]);
-            }
-
-            return sum.sqrMagnitude < 1e-10f ? Vector3.zero : sum.normalized;
         }
 
         private static Vector3 PositionAtFrame(

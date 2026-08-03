@@ -11,7 +11,11 @@ namespace BugCam.Evidence
     /// </summary>
     public static class EvidenceCameraPlanSchema
     {
-        public const int SchemaVersion = 1;
+        // v2 (2026-08-03): adds occlusionCoveragePerBody (the verdict gate, distinct from
+        // bestScorePerBody); removes candidates[].separationScore and winners[].contactProximity/
+        // trajectoryAlignment/rankScore (dead terms removed from the algorithm). Breaking change
+        // vs v1 consumers.
+        public const int SchemaVersion = 2;
 
         public const string Kind = "BugCam.EvidenceCameraPlan";
 

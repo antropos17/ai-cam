@@ -814,6 +814,8 @@ namespace BugCam.Evidence
             WriteString(sb, "errorCode", document.ErrorCode ?? string.Empty);
             WriteString(sb, "runDirectory", runDir.Replace('\\', '/'));
 
+            AppendPhysicsSnapshot(sb, document.Environment);
+
             sb.Append(",\"artifacts\":[");
             AppendArtifact(sb, GhostEvidenceSchema.MetricsFileName, "metrics", true, true);
             sb.Append(',');
@@ -887,6 +889,67 @@ namespace BugCam.Evidence
             WriteBool(sb, "baselineRunWritten", hasBaseline);
             sb.Append('}');
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// Live physics values captured at build time — never BugCam constants.
+        /// captured=false (or a missing editor-serialized value) emits honest nulls.
+        /// </summary>
+        private static void AppendPhysicsSnapshot(StringBuilder sb, GhostRunEnvironment env)
+        {
+            var physics = env.Physics;
+            sb.Append(",\"physicsSnapshot\":{");
+            WriteBool(sb, "captured", physics.Captured, true);
+            WriteString(sb, "unityVersion", env.UnityVersion ?? string.Empty);
+            if (physics.Captured)
+            {
+                WriteFloat(sb, "fixedDeltaTime", physics.FixedDeltaTime);
+                WriteString(sb, "simulationMode", physics.SimulationMode);
+                WriteInt(sb, "solverIterations", physics.SolverIterations);
+                WriteInt(sb, "solverVelocityIterations", physics.SolverVelocityIterations);
+                WriteFloat(sb, "defaultContactOffset", physics.DefaultContactOffset);
+                WriteFloat(
+                    sb,
+                    "defaultMaxDepenetrationVelocity",
+                    physics.DefaultMaxDepenetrationVelocity);
+                WriteFloat(sb, "sleepThreshold", physics.SleepThreshold);
+                WriteFloat(sb, "bounceThreshold", physics.BounceThreshold);
+                WriteVec3(sb, "gravity", physics.Gravity);
+            }
+            else
+            {
+                WriteNull(sb, "fixedDeltaTime");
+                WriteNull(sb, "simulationMode");
+                WriteNull(sb, "solverIterations");
+                WriteNull(sb, "solverVelocityIterations");
+                WriteNull(sb, "defaultContactOffset");
+                WriteNull(sb, "defaultMaxDepenetrationVelocity");
+                WriteNull(sb, "sleepThreshold");
+                WriteNull(sb, "bounceThreshold");
+                WriteNull(sb, "gravity");
+            }
+
+            if (physics.Captured && physics.HasEnhancedDeterminism)
+            {
+                WriteBool(sb, "enhancedDeterminism", physics.EnhancedDeterminism);
+            }
+            else
+            {
+                WriteNull(sb, "enhancedDeterminism");
+            }
+
+            if (physics.Captured && physics.HasThreadingMode)
+            {
+                WriteInt(sb, "threadingModeSerialized", physics.ThreadingModeSerialized);
+                WriteString(sb, "threadingModeName", physics.ThreadingModeName);
+            }
+            else
+            {
+                WriteNull(sb, "threadingModeSerialized");
+                WriteNull(sb, "threadingModeName");
+            }
+
+            sb.Append('}');
         }
 
         private static void AppendArtifact(
