@@ -102,5 +102,11 @@ namespace BugCam.Evidence
         /// fails closed instead of silently falling back to defaults.
         /// </summary>
         public const string SettingsResolveFailed = "SETTINGS_RESOLVE_FAILED";
+
+        /// <summary>
+        /// Block 2.2.1 A2: the open scene did not capture cleanly (fail-closed with
+        /// per-object reasons in the sceneCapture manifest section) — no simulation ran.
+        /// </summary>
+        public const string SceneCaptureFailed = "SCENE_CAPTURE_FAILED";
     }
 }

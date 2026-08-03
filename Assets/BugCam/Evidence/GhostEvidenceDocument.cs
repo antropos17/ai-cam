@@ -355,7 +355,8 @@ namespace BugCam.Evidence
             string errorCode = null,
             string errorReason = null,
             GhostRunEnvironment environment = default,
-            GhostSettingsProvenance settingsSource = default)
+            GhostSettingsProvenance settingsSource = default,
+            SceneCaptureResult sceneCapture = default)
         {
             SchemaVersion = GhostEvidenceSchema.SchemaVersion;
             Kind = GhostEvidenceSchema.Kind;
@@ -375,6 +376,7 @@ namespace BugCam.Evidence
             ErrorReason = errorReason ?? string.Empty;
             Environment = environment;
             SettingsSource = settingsSource;
+            SceneCapture = sceneCapture;
         }
 
         public int SchemaVersion { get; }
@@ -396,6 +398,12 @@ namespace BugCam.Evidence
 
         /// <summary>A1 settings provenance; Captured=false for pre-A1 callers.</summary>
         public GhostSettingsProvenance SettingsSource { get; }
+
+        /// <summary>
+        /// A2 scene-capture record; Performed=false for procedural (tower) runs — the
+        /// manifest then carries no sceneCapture section.
+        /// </summary>
+        public SceneCaptureResult SceneCapture { get; }
 
         public EpsilonSearchResult SearchResult { get; }
 

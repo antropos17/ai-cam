@@ -570,6 +570,23 @@ namespace BugCam.Evidence
             }
 
             sb.AppendLine("- **Verdict:** " + search.Verdict);
+            if (document.SceneCapture.Performed)
+            {
+                // A2: the freeze caveat sits with the verdict — the evidence consumer
+                // must see it without the window.
+                for (var i = 0; i < document.SceneCapture.KinematicFreezeWarnings.Length; i++)
+                {
+                    sb.AppendLine(
+                        "- **ВНИМАНИЕ:** " + document.SceneCapture.KinematicFreezeWarnings[i]);
+                }
+
+                sb.AppendLine(
+                    "- **Scene capture:** " +
+                    (document.SceneCapture.Succeeded ? "captured" : "fail-closed") +
+                    ", " + document.SceneCapture.Bodies.Length + " bodies, hash `" +
+                    document.SceneCapture.CaptureHash + "`");
+            }
+
             sb.AppendLine(
                 "- **Search identity:** body " + document.SearchIdentity.TargetBodyId +
                 ", axis " + FormatAxisLabel(document.SearchIdentity.SearchAxis) +
@@ -816,6 +833,10 @@ namespace BugCam.Evidence
 
             AppendPhysicsSnapshot(sb, document.Environment);
             AppendSettingsSource(sb, document.SettingsSource);
+            if (document.SceneCapture.Performed)
+            {
+                AppendSceneCapture(sb, document.SceneCapture);
+            }
 
             sb.Append(",\"artifacts\":[");
             AppendArtifact(sb, GhostEvidenceSchema.MetricsFileName, "metrics", true, true);
@@ -914,6 +935,115 @@ namespace BugCam.Evidence
             }
 
             sb.Append('}');
+        }
+
+        /// <summary>
+        /// Block 2.2.1 A2 sceneCapture section — present only when a capture happened
+        /// (tower manifests stay unchanged). Carries the three-outcome per-object records,
+        /// the id↔name map, the capture hash, and the kinematic-freeze warnings the
+        /// evidence consumer must see without the window.
+        /// </summary>
+        private static void AppendSceneCapture(StringBuilder sb, SceneCaptureResult capture)
+        {
+            sb.Append(",\"sceneCapture\":{");
+            WriteBool(sb, "captured", capture.Succeeded, true);
+            WriteString(sb, "scenePath", capture.ScenePath);
+            WriteString(sb, "captureHash", capture.CaptureHash);
+            if (!capture.Succeeded)
+            {
+                WriteString(sb, "failureSummary", capture.FailureSummary);
+            }
+
+            var capturedStatics = 0;
+            var frozenKinematics = 0;
+            var excluded = 0;
+            for (var i = 0; i < capture.Objects.Length; i++)
+            {
+                switch (capture.Objects[i].Status)
+                {
+                    case SceneCaptureObjectStatus.CapturedStatic:
+                        capturedStatics++;
+                        break;
+                    case SceneCaptureObjectStatus.FrozenKinematic:
+                        frozenKinematics++;
+                        break;
+                    case SceneCaptureObjectStatus.ExcludedSafely:
+                        excluded++;
+                        break;
+                }
+            }
+
+            WriteInt(sb, "capturedBodyCount", capture.Bodies.Length);
+            WriteInt(sb, "capturedStaticObjectCount", capturedStatics);
+            WriteInt(sb, "frozenKinematicCount", frozenKinematics);
+            WriteInt(sb, "excludedCount", excluded);
+
+            sb.Append(",\"kinematicFreezeWarnings\":[");
+            for (var i = 0; i < capture.KinematicFreezeWarnings.Length; i++)
+            {
+                if (i > 0)
+                {
+                    sb.Append(',');
+                }
+
+                sb.Append('"').Append(Escape(capture.KinematicFreezeWarnings[i])).Append('"');
+            }
+
+            sb.Append(']');
+
+            sb.Append(",\"bodyMap\":[");
+            var firstBody = true;
+            for (var i = 0; i < capture.Objects.Length; i++)
+            {
+                var record = capture.Objects[i];
+                if (record.Status != SceneCaptureObjectStatus.CapturedDynamic)
+                {
+                    continue;
+                }
+
+                if (!firstBody)
+                {
+                    sb.Append(',');
+                }
+
+                firstBody = false;
+                sb.Append('{');
+                WriteInt(sb, "stableId", record.StableId, true);
+                WriteString(sb, "hierarchyPath", record.HierarchyPath);
+                // Display paths may repeat (48 bricks named identically); the order key
+                // (sibling-index chain) is the unique identity behind the stable ID.
+                WriteString(sb, "orderKey", record.OrderKey);
+                sb.Append('}');
+            }
+
+            sb.Append(']');
+
+            sb.Append(",\"objects\":[");
+            for (var i = 0; i < capture.Objects.Length; i++)
+            {
+                var record = capture.Objects[i];
+                if (i > 0)
+                {
+                    sb.Append(',');
+                }
+
+                sb.Append('{');
+                WriteString(sb, "hierarchyPath", record.HierarchyPath, true);
+                WriteString(sb, "status", record.Status.ToString());
+                if (record.StableId >= 0)
+                {
+                    WriteInt(sb, "stableId", record.StableId);
+                }
+                else
+                {
+                    WriteNull(sb, "stableId");
+                }
+
+                WriteString(sb, "reason", record.Reason);
+                sb.Append('}');
+            }
+
+            sb.Append("]}");
         }
 
         /// <summary>

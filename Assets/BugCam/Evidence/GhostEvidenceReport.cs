@@ -34,6 +34,19 @@ namespace BugCam.Evidence
             sb.AppendLine("gitBranch=" + (document.Environment.GitBranch ?? string.Empty));
             sb.AppendLine("scenePath=" + (document.Environment.ScenePath ?? string.Empty));
             sb.AppendLine("verdict=" + search.Verdict);
+            // A2: kinematic-freeze warnings belong next to the verdict — the evidence
+            // consumer must see the caveat without the window. Absent for tower runs.
+            if (document.SceneCapture.Performed)
+            {
+                sb.AppendLine("sceneCaptured=" + document.SceneCapture.Succeeded);
+                sb.AppendLine("sceneCaptureHash=" + document.SceneCapture.CaptureHash);
+                var captureWarnings = document.SceneCapture.KinematicFreezeWarnings;
+                sb.AppendLine("sceneCaptureWarningCount=" + captureWarnings.Length);
+                for (var i = 0; i < captureWarnings.Length; i++)
+                {
+                    sb.AppendLine("sceneCaptureWarning[" + i + "]=" + captureWarnings[i]);
+                }
+            }
             sb.AppendLine("targetBodyId=" + document.SearchIdentity.TargetBodyId);
             sb.AppendLine(
                 "searchAxis=" +

@@ -27,7 +27,8 @@ namespace BugCam.Evidence
             float[] bodyScalesMetres = null,
             string runId = null,
             GhostRunEnvironment environment = default,
-            GhostSettingsProvenance settingsSource = default)
+            GhostSettingsProvenance settingsSource = default,
+            SceneCaptureResult sceneCapture = default)
         {
             if (settings == null)
             {
@@ -42,7 +43,8 @@ namespace BugCam.Evidence
                 bodyScalesMetres,
                 runId,
                 environment,
-                settingsSource);
+                settingsSource,
+                sceneCapture);
         }
 
         public static GhostEvidenceBuildResult Build(
@@ -53,7 +55,8 @@ namespace BugCam.Evidence
             float[] bodyScalesMetres = null,
             string runId = null,
             GhostRunEnvironment environment = default,
-            GhostSettingsProvenance settingsSource = default)
+            GhostSettingsProvenance settingsSource = default,
+            SceneCaptureResult sceneCapture = default)
         {
             if (!searchResult.Succeeded)
             {
@@ -66,7 +69,8 @@ namespace BugCam.Evidence
                         ghostBodyLimit > 0 ? ghostBodyLimit : 10,
                         runId,
                         environment,
-                        settingsSource));
+                        settingsSource,
+                        sceneCapture));
             }
 
             if (!searchResult.BaselineRun.Succeeded)
@@ -80,7 +84,8 @@ namespace BugCam.Evidence
                         ghostBodyLimit > 0 ? ghostBodyLimit : 10,
                         runId,
                         environment,
-                        settingsSource));
+                        settingsSource,
+                        sceneCapture));
             }
 
             var thresholdError = thresholds.Validate();
@@ -95,7 +100,8 @@ namespace BugCam.Evidence
                         ghostBodyLimit > 0 ? ghostBodyLimit : 10,
                         runId,
                         environment,
-                        settingsSource));
+                        settingsSource,
+                        sceneCapture));
             }
 
             if (ghostBodyLimit <= 0)
@@ -109,7 +115,8 @@ namespace BugCam.Evidence
                         10,
                         runId,
                         environment,
-                        settingsSource));
+                        settingsSource,
+                        sceneCapture));
             }
 
             // STABLE ⇒ no fabricated fans. Honor Core retention exactly.
@@ -129,7 +136,8 @@ namespace BugCam.Evidence
                             ghostBodyLimit,
                             runId,
                             environment,
-                            settingsSource));
+                            settingsSource,
+                            sceneCapture));
                 }
             }
 
@@ -145,7 +153,8 @@ namespace BugCam.Evidence
                         ghostBodyLimit,
                         runId,
                         environment,
-                        settingsSource));
+                        settingsSource,
+                        sceneCapture));
             }
 
             if (retainedFans.Length > 0 &&
@@ -162,7 +171,8 @@ namespace BugCam.Evidence
                         ghostBodyLimit,
                         runId,
                         environment,
-                        settingsSource));
+                        settingsSource,
+                        sceneCapture));
             }
 
             var fans = new GhostFanEvidence[retainedFans.Length];
@@ -183,7 +193,8 @@ namespace BugCam.Evidence
                             ghostBodyLimit,
                             runId,
                             environment,
-                            settingsSource));
+                            settingsSource,
+                            sceneCapture));
                 }
 
                 // Fail closed: OutsideSearchRange must agree with ε > search ceiling.
@@ -207,7 +218,8 @@ namespace BugCam.Evidence
                             ghostBodyLimit,
                             runId,
                             environment,
-                            settingsSource));
+                            settingsSource,
+                            sceneCapture));
                 }
 
                 var expectedMultiplier = ResolveMultiplier(i, searchResult.ReferenceEpsilonMetres);
@@ -228,7 +240,8 @@ namespace BugCam.Evidence
                             ghostBodyLimit,
                             runId,
                             environment,
-                            settingsSource));
+                            settingsSource,
+                            sceneCapture));
                 }
 
                 // Fail closed: fan epsilon ≈ ReferenceEpsilon × multiplier.
@@ -257,7 +270,8 @@ namespace BugCam.Evidence
                             ghostBodyLimit,
                             runId,
                             environment,
-                            settingsSource));
+                            settingsSource,
+                            sceneCapture));
                 }
 
                 var divergence = DivergenceEngine.Analyze(
@@ -276,7 +290,8 @@ namespace BugCam.Evidence
                             ghostBodyLimit,
                             runId,
                             environment,
-                            settingsSource));
+                            settingsSource,
+                            sceneCapture));
                 }
 
                 divergences[i] = divergence;
@@ -325,7 +340,8 @@ namespace BugCam.Evidence
                 GhostEvidenceErrorCodes.None,
                 string.Empty,
                 environment,
-                settingsSource);
+                settingsSource,
+                sceneCapture);
 
             var drawSet = GhostRenderer.BuildDrawSet(document);
             document = new GhostEvidenceDocument(
@@ -343,7 +359,8 @@ namespace BugCam.Evidence
                 GhostEvidenceErrorCodes.None,
                 string.Empty,
                 environment,
-                settingsSource);
+                settingsSource,
+                sceneCapture);
 
             return GhostEvidenceBuildResult.Success(document);
         }
@@ -360,7 +377,8 @@ namespace BugCam.Evidence
             int ghostBodyLimit = 10,
             string runId = null,
             GhostRunEnvironment environment = default,
-            GhostSettingsProvenance settingsSource = default)
+            GhostSettingsProvenance settingsSource = default,
+            SceneCaptureResult sceneCapture = default)
         {
             var resolvedRunId = string.IsNullOrEmpty(runId)
                 ? CreateFailureRunId(searchIdentity, errorCode)
@@ -383,7 +401,8 @@ namespace BugCam.Evidence
                     : errorCode,
                 errorReason ?? string.Empty,
                 environment,
-                settingsSource);
+                settingsSource,
+                sceneCapture);
         }
 
         public static string ResolveSearchErrorCode(string errorReason)

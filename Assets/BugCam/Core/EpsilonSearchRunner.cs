@@ -40,6 +40,13 @@ namespace BugCam.Core
         public EpsilonSearchResult LastResult { get; private set; }
 
         /// <summary>
+        /// A2 captured statics for every probe request. Null (default) = legacy tower
+        /// ground; set before starting <see cref="Run"/>. A property rather than a Run
+        /// parameter so Run keeps its pinned single 5-parameter reflection signature.
+        /// </summary>
+        public SimulationStaticColliderDefinition[] StaticColliders { get; set; }
+
+        /// <summary>
         /// Run the search to completion. Must be started as a Play Mode coroutine.
         /// Read <see cref="LastResult"/> after the enumerator finishes.
         /// </summary>
@@ -90,7 +97,11 @@ namespace BugCam.Core
                         request.Axis,
                         request.EpsilonMetres);
 
-                var simRequest = new SimulationRequest(bodies, stepCount, perturbation);
+                var simRequest = new SimulationRequest(
+                    bodies,
+                    stepCount,
+                    perturbation,
+                    StaticColliders);
                 var harnessResult = _harness.Run(simRequest);
 
                 var cleanupTimedOut = false;

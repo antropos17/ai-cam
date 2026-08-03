@@ -11,6 +11,17 @@ namespace BugCam.Core
         public const float RepeatabilityGate = 1e-6f;
     }
 
+    /// <summary>
+    /// Block 2.2.1 A2 primitive collider shapes. Box is the default (all pre-A2 call
+    /// sites); Sphere interprets <see cref="SimulationBodyDefinition.Size"/> as a uniform
+    /// diameter vector (ratified: sphere Size = diameter).
+    /// </summary>
+    public enum SimulationColliderShape
+    {
+        Box = 0,
+        Sphere = 1
+    }
+
     public readonly struct SimulationBodyDefinition
     {
         public SimulationBodyDefinition(
@@ -30,6 +41,25 @@ namespace BugCam.Core
             Vector3 size,
             float mass,
             Vector3 initialLinearVelocity)
+            : this(
+                stableId,
+                position,
+                rotation,
+                size,
+                mass,
+                initialLinearVelocity,
+                SimulationColliderShape.Box)
+        {
+        }
+
+        public SimulationBodyDefinition(
+            int stableId,
+            Vector3 position,
+            Quaternion rotation,
+            Vector3 size,
+            float mass,
+            Vector3 initialLinearVelocity,
+            SimulationColliderShape shape)
         {
             StableId = stableId;
             Position = position;
@@ -37,6 +67,7 @@ namespace BugCam.Core
             Size = size;
             Mass = mass;
             InitialLinearVelocity = initialLinearVelocity;
+            Shape = shape;
         }
 
         public int StableId { get; }
@@ -50,6 +81,35 @@ namespace BugCam.Core
         public float Mass { get; }
 
         public Vector3 InitialLinearVelocity { get; }
+
+        public SimulationColliderShape Shape { get; }
+    }
+
+    /// <summary>
+    /// Block 2.2.1 A2: one captured static collider (including kinematic bodies frozen to
+    /// static). Recreated in every temporary physics scene exactly as recorded.
+    /// </summary>
+    public readonly struct SimulationStaticColliderDefinition
+    {
+        public SimulationStaticColliderDefinition(
+            Vector3 position,
+            Quaternion rotation,
+            Vector3 size,
+            SimulationColliderShape shape)
+        {
+            Position = position;
+            Rotation = rotation;
+            Size = size;
+            Shape = shape;
+        }
+
+        public Vector3 Position { get; }
+
+        public Quaternion Rotation { get; }
+
+        public Vector3 Size { get; }
+
+        public SimulationColliderShape Shape { get; }
     }
 
     public readonly struct SimulationPerturbation
@@ -74,10 +134,20 @@ namespace BugCam.Core
             SimulationBodyDefinition[] bodies,
             int stepCount,
             SimulationPerturbation perturbation)
+            : this(bodies, stepCount, perturbation, null)
+        {
+        }
+
+        public SimulationRequest(
+            SimulationBodyDefinition[] bodies,
+            int stepCount,
+            SimulationPerturbation perturbation,
+            SimulationStaticColliderDefinition[] staticColliders)
         {
             Bodies = bodies;
             StepCount = stepCount;
             Perturbation = perturbation;
+            StaticColliders = staticColliders;
         }
 
         public SimulationBodyDefinition[] Bodies { get; }
@@ -85,6 +155,13 @@ namespace BugCam.Core
         public int StepCount { get; }
 
         public SimulationPerturbation Perturbation { get; }
+
+        /// <summary>
+        /// A2: null = legacy procedural ground (tower path, bit-identical to pre-A2);
+        /// non-null (possibly empty) = create exactly these captured statics and no
+        /// implicit ground.
+        /// </summary>
+        public SimulationStaticColliderDefinition[] StaticColliders { get; }
     }
 
     public readonly struct SimulationRunResult
@@ -235,6 +312,23 @@ namespace BugCam.Core
                 }
             }
 
+            if (request.StaticColliders != null)
+            {
+                for (var i = 0; i < request.StaticColliders.Length; i++)
+                {
+                    var collider = request.StaticColliders[i];
+                    if (!IsFinite(collider.Position) ||
+                        !IsFinite(collider.Rotation) ||
+                        !IsPositiveFinite(collider.Size.x) ||
+                        !IsPositiveFinite(collider.Size.y) ||
+                        !IsPositiveFinite(collider.Size.z))
+                    {
+                        return SimulationRunResult.Failure(
+                            "Every static collider needs finite position and rotation plus positive finite size.");
+                    }
+                }
+            }
+
             if (!Application.isPlaying)
             {
                 return SimulationRunResult.Failure(
@@ -265,9 +359,24 @@ namespace BugCam.Core
                     return SimulationRunResult.Failure("The local PhysicsScene is invalid.");
                 }
 
-                // Static ground matches TowerSceneGenerator so tower bodies rest/collide
-                // identically to the demo scene. Not counted in the 49 Rigidbody body set.
-                CreateGround(simulationScene);
+                if (request.StaticColliders == null)
+                {
+                    // Static ground matches TowerSceneGenerator so tower bodies rest/collide
+                    // identically to the demo scene. Not counted in the 49 Rigidbody body set.
+                    CreateGround(simulationScene);
+                }
+                else
+                {
+                    // A2 captured scene: exactly the recorded statics, no implicit ground.
+                    for (var staticIndex = 0;
+                         staticIndex < request.StaticColliders.Length;
+                         staticIndex++)
+                    {
+                        CreateStaticCollider(
+                            simulationScene,
+                            request.StaticColliders[staticIndex]);
+                    }
+                }
 
                 var runtimeBodies = new Rigidbody[orderedBodies.Length];
                 for (var bodyIndex = 0; bodyIndex < orderedBodies.Length; bodyIndex++)
@@ -402,6 +511,24 @@ namespace BugCam.Core
                    !float.IsNaN(value.w);
         }
 
+        private static void CreateStaticCollider(
+            Scene simulationScene,
+            SimulationStaticColliderDefinition definition)
+        {
+            var gameObject = new GameObject("BugCam Static");
+            SceneManager.MoveGameObjectToScene(gameObject, simulationScene);
+            gameObject.transform.SetPositionAndRotation(definition.Position, definition.Rotation);
+            gameObject.transform.localScale = definition.Size;
+            if (definition.Shape == SimulationColliderShape.Sphere)
+            {
+                gameObject.AddComponent<SphereCollider>();
+            }
+            else
+            {
+                gameObject.AddComponent<BoxCollider>();
+            }
+        }
+
         private static void CreateGround(Scene simulationScene)
         {
             var ground = GameObject.CreatePrimitive(PrimitiveType.Cube);
@@ -427,7 +554,15 @@ namespace BugCam.Core
 
             gameObject.transform.SetPositionAndRotation(position, body.Rotation);
             gameObject.transform.localScale = body.Size;
-            gameObject.AddComponent<BoxCollider>();
+            if (body.Shape == SimulationColliderShape.Sphere)
+            {
+                // Unit sphere radius 0.5 × uniform localScale = Size ⇒ Size is the diameter.
+                gameObject.AddComponent<SphereCollider>();
+            }
+            else
+            {
+                gameObject.AddComponent<BoxCollider>();
+            }
 
             var rigidbody = gameObject.AddComponent<Rigidbody>();
             rigidbody.mass = body.Mass;

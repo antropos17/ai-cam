@@ -6,7 +6,8 @@
 
 ## Ключевые входы
 
-- **Вход поиска:** `GhostEvidencePlayModeHost.TryStartTowerSearch(GhostSearchEntry, source, out reject)` — единственный публичный вход (окно и меню). Entry-структура и резолвер настроек: `Editor/GhostSearchEntry.cs`.
+- **Вход поиска:** `GhostEvidencePlayModeHost.TryStartTowerSearch(GhostSearchEntry, source, out reject)` — единственный публичный вход (окно и меню). Entry-структура и резолвер настроек: `Editor/GhostSearchEntry.cs`. С A2 entry несёт `SceneKind` (Tower | CapturedScene): scene-режим захватывает открытую сцену в раннере (fail-closed → `SCENE_CAPTURE_FAILED`), статики идут через `EpsilonSearchRunner.StaticColliders`.
+- **Захват сцены (A2):** `Core/SceneCapture.cs` — три исхода (captured / excluded-safely / fail-closed с per-object причинами), Box+Sphere (`Size` сферы = диаметр), кинематика → static (+Animator-предупреждение в окно/вердикт/manifest), stable ID = hierarchy path + sibling index, SHA-256 capture hash; секция `sceneCapture` в manifest (писатель) — только для scene-ранов.
 - **Источники настроек (A1):** приоритет правка окна > ассет (GUID) > дефолты; единственный путь конструирования — `GhostSearchEntryResolver` (grep-пин: `CreateDefault(` — 0 в хосте/окне, 1 в резолвере). Границы валидации — консты в `DivergenceSettings`; полный контракт — `docs/CONTRACT-2.2.1.md`.
 - **Писатель улик:** `Evidence/GhostEvidenceWriter.cs` (`Write`, `BuildManifestJson` — секция `settingsSource`, `BuildMetricsJson`). Раскладка: `Library/BugCamEvidence/Runs/<run-id>/` → `manifest.json`, `metrics.json`, `summary.md`, `report/console-report.txt`, `runs/baseline.json` + `fan-00…14`, `visuals/*.png`; указатель `.../Checkpoint/last-run.txt`.
 - **Пины тестов:** source-scan пины хоста/окна — `Tests/EditMode/GhostWindowUxTests.cs` (Play Mode exit-маркер) и `GhostEvidenceTests.cs` (маршрут TryStart/coroutine); контракт A1 (таблица валидации verbatim, приоритет, mm↔m, персистентность) — `SearchEntryParameterizationTests.cs`.
@@ -15,7 +16,8 @@
 
 ## Core (`Assets/BugCam/Core`, ноль зависимостей от Evidence/Editor)
 
-- `SimulationHarness.cs` — прогон в свежей локальной PhysicsScene (Play Mode), применение возмущения, deterministic fail вне Play Mode; здесь же `BugCamConstants` (FixedStep 0.02f, StateStride 14)
+- `SimulationHarness.cs` — прогон в свежей локальной PhysicsScene (Play Mode), применение возмущения, deterministic fail вне Play Mode; здесь же `BugCamConstants` (FixedStep 0.02f, StateStride 14), `SimulationColliderShape` (Box|Sphere) и `SimulationStaticColliderDefinition`; `StaticColliders == null` в запросе ⇒ легаси-ground башни, non-null ⇒ ровно захваченные статики
+- `SceneCapture.cs` — A2-захват открытой сцены → `SceneCaptureResult` (тела/статики/per-object записи/предупреждения/hash)
 - `StateRecorder.cs` — плоские массивы `[runs×steps×bodies×14]`
 - `RunResult.cs` — результат прогона + метаданные возмущения
 - `DivergenceEngine.cs` — по-шаговый скор + AND-гейт (порог, sustained, ≥1 тело)
