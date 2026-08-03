@@ -43,7 +43,7 @@ Epsilon search (Block 1.4) — same asset, per `CLAUDE.md` "all thresholds live 
 | `EpsilonStart` = 1e-5 | metres | first magnitude of the exponential search (0.01 mm) |
 | `EpsilonGrowthFactor` = 2 | — | multiplier per exponential step |
 | `EpsilonCeiling` = 1e-2 | metres | upper bound of the tested range (10 mm); above it the verdict is `STABLE WITHIN TESTED RANGE` |
-| `BisectionIterations` | steps | binary-search depth; the single default is fixed in Block 1.4 (range 6–8 was never narrowed) |
+| `BisectionIterations` = 7 | steps | binary-search depth; Block 1.4 fixed the prior 6–8 range to this single default |
 | `LadderPointCount` = 12 | points | log-uniform monotonicity ladder run before bisection is trusted |
 | `FanMultipliers` = {0.8, 0.9, 1.0, 1.1, 1.2} | × threshold | fan spread; 5 multipliers × 3 axes = 15 runs + baseline |
 
@@ -65,10 +65,11 @@ Rules:
 - VERIFY: unit tests on synthetic trajectories (known divergence frame must be found exactly; pure noise must yield none).
 
 ### Block 1.4 — Adaptive Epsilon Search
-- Exponential from 0.01 mm ×2 up to 10 mm ceiling → binary search 6–8 iters → fan: exactly 15 runs = {0.8, 0.9, 1.0, 1.1, 1.2} × threshold across axes X/Y/Z, plus baseline = 16th run.
-- No divergence in range → verdict `STABLE WITHIN TESTED RANGE`.
-- Bisection assumes divergence is monotonic in epsilon; a chaotic scene does not owe us that. Before trusting bisection, run a 12-point log-uniform epsilon ladder (0.01 → 10 mm, one run each) and print `epsilon → firstDivergenceFrame → maxSpread`. Non-monotonicity is a finding for STATUS.md, and the result is then reported as a threshold *within the tested range*.
-- VERIFY, two separate checks: (a) a repeat with identical configuration must be bit-identical — this is the determinism regression test, not a convergence test; (b) three searches from different starting conditions (start 0.01 mm ×2; start 0.02 mm ×2; descend from the 10 mm ceiling), on different axes, must land within ±1 bisection step of each other.
+- Search range is `EpsilonStart`…`EpsilonCeiling` (default 0.01 mm…10 mm). Characterization (fan) may reach `1.2 × EpsilonCeiling`; do not silently clamp fan magnitudes — mark every fan sample above the search ceiling `OutsideSearchRange=true`. Console/result data report search range separately from characterization range.
+- Step-driven state machine (`TryGetNextProbe` / `SubmitProbeResult`): baseline → 12-point log-uniform ladder → (if monotonic) exponential by strategy → bisection → fan. Unity runner executes probes sequentially and waits for prior local PhysicsScene cleanup.
+- Ladder first: non-monotonic → verdict `NON-MONOTONIC WITHIN TESTED RANGE`, skip bisection, preserve the ladder, fan around the smallest observed divergent ladder sample labeled as **reference epsilon** (not an exact threshold). No divergence through the ceiling → `STABLE WITHIN TESTED RANGE` (no invented threshold, no fan). Monotonic bracket → report largest tested stable epsilon, smallest tested divergent epsilon, threshold **estimate** = smallest tested divergent, final bracket width — never claim an exact mathematical threshold.
+- Fan remains exactly `{0.8, 0.9, 1.0, 1.1, 1.2} × reference epsilon × X/Y/Z` (15 runs) plus retained baseline. Full `RunResult` frames only for baseline + those 15 fan runs; ladder/exponential/bisection keep compact summaries.
+- VERIFY, two separate checks: (a) a repeat with identical configuration must be bit-identical — this is the determinism regression test, not a convergence test (**OPEN/partial in Block 1.4:** PlayMode currently asserts repeated **baseline-only** within ≤1e-6; bit-identical identical-config **search** repeat remains future work — do not reopen Core for it in this block); (b) **algorithm convergence** compares different starting strategies (`AscendFromStart` 0.01 mm ×2; `AscendFromCustomStart` 0.02 mm ×2; `DescendFromCeiling`) on the **same axis, same scene, same target body, and same configuration** — **proven in Block 1.4:** they land within ±1 **growth** step of each other (`EpsilonGrowthFactor=2` ⇒ Ratio≤2) at measured `VerifyStepCount=32`. Agreement within ±1 **bisection** step is **future/OPEN** (not claimed). X/Y/Z searches are directional characterization; their physical thresholds are reported but are **not** required to match.
 
 ### Block 1.5 — Ghost visualization
 - Trajectories of all runs: LineRenderer or DrawMeshInstanced ghosts. Baseline white, runs colored by divergence magnitude. Red sphere at first divergence. Show only top-10 diverging bodies + baseline.

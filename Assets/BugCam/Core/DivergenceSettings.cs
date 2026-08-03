@@ -85,9 +85,8 @@ namespace BugCam.Core
         // range; above it the honest verdict is STABLE WITHIN TESTED RANGE.
         public const float DefaultEpsilonCeiling = 1e-2f;
 
-        // 7. Why: PROVISIONAL — docs/PLAN.md carries an unnarrowed 6–8 range and states the
-        // single default is fixed in Block 1.4. 7 is the midpoint and resolves a bracket to
-        // ~1/128 of its width; Block 1.4 ratifies or replaces it.
+        // 7. Why: docs/PLAN.md Block 1.4 fixes BisectionIterations = 7 (prior unnarrowed
+        // 6–8 range narrowed). 7 resolves a bracket to ~1/128 of its width.
         public const int DefaultBisectionIterations = 7;
 
         // 12. Why: docs/PLAN.md Block 1.4 fixes a 12-point log-uniform ladder from 0.01 mm to
@@ -278,6 +277,22 @@ namespace BugCam.Core
                 weightRotation,
                 weightVelocity,
                 weightSleep);
+        }
+
+        /// <summary>
+        /// Plain-struct view of Block 1.4 adaptive epsilon search fields.
+        /// </summary>
+        public EpsilonSearchSettings ToSearchSettings()
+        {
+            return EpsilonSearchSettings.FromDivergenceSettings(this);
+        }
+
+        /// <summary>
+        /// Empty string when Block 1.4 search fields are usable; otherwise the validation reason.
+        /// </summary>
+        public string ValidateSearchSettings()
+        {
+            return ToSearchSettings().Validate();
         }
     }
 }
