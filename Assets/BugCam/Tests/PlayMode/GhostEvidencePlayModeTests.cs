@@ -44,6 +44,13 @@ namespace BugCam.Tests
                 49,
                 Vector3.right,
                 Enum.ToObject(strategyType, 0));
+            var envType = Type.GetType("BugCam.Evidence.GhostRunEnvironment, BugCam.Evidence");
+            var environment = Activator.CreateInstance(
+                envType,
+                Application.unityVersion ?? string.Empty,
+                string.Empty,
+                string.Empty,
+                SceneManager.GetActiveScene().path ?? string.Empty);
 
             object document;
             try
@@ -63,7 +70,8 @@ namespace BugCam.Tests
                         identityType,
                         settingsType,
                         typeof(float[]),
-                        typeof(string)
+                        typeof(string),
+                        envType
                     }).Invoke(
                     null,
                     new object[]
@@ -72,11 +80,13 @@ namespace BugCam.Tests
                         identity,
                         settings,
                         scales,
-                        "playmode-smoke-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss")
+                        "playmode-smoke-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss"),
+                        environment
                     });
 
                 Assert.That(Prop<bool>(build, "Succeeded"), Is.True, Prop<string>(build, "ErrorReason"));
                 document = Prop<object>(build, "Document");
+                Assert.That(Prop<bool>(document, "Success"), Is.True);
             }
             finally
             {

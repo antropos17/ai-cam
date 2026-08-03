@@ -109,6 +109,8 @@ namespace BugCam.Editor
             {
                 var settings = DivergenceSettings.CreateDefault();
                 var identity = new GhostSearchIdentity(49, axis.normalized, strategy);
+                var environment = GhostRunEnvironment.Capture(
+                    UnityEngine.SceneManagement.SceneManager.GetActiveScene().path);
                 var search = new EpsilonSearch(
                     settings.ToSearchSettings(),
                     identity.TargetBodyId,
@@ -131,31 +133,40 @@ namespace BugCam.Editor
                     scales);
 
                 var searchResult = runner.LastResult;
-                Debug.Log(EpsilonSearchReport.Format(searchResult));
+                Debug.Log(GhostEvidenceWriter.FormatHonestSearchReport(
+                    searchResult,
+                    searchResult.Succeeded));
 
-                if (!searchResult.Succeeded)
-                {
-                    Debug.LogError("Ghost evidence host search failed: " + searchResult.ErrorReason);
-                    Cleanup();
-                    yield break;
-                }
-
+                GhostEvidenceDocument document;
                 var build = GhostEvidenceBuilder.Build(
                     searchResult,
                     identity,
                     settings,
-                    scales);
-                if (!build.Succeeded)
+                    scales,
+                    null,
+                    environment);
+                if (!build.Succeeded || build.Document == null)
                 {
-                    Debug.LogError("Ghost evidence build failed: " + build.ErrorReason);
-                    Cleanup();
-                    yield break;
+                    document = GhostEvidenceBuilder.CreateFailureDocument(
+                        searchResult,
+                        identity,
+                        searchResult.Succeeded
+                            ? GhostEvidenceErrorCodes.BuildFailed
+                            : GhostEvidenceBuilder.ResolveSearchErrorCode(searchResult.ErrorReason),
+                        build.ErrorReason ?? searchResult.ErrorReason,
+                        settings.GhostBodyLimit,
+                        null,
+                        environment);
+                }
+                else
+                {
+                    document = build.Document;
                 }
 
-                Debug.Log(GhostEvidenceReport.Format(build.Document));
+                Debug.Log(GhostEvidenceReport.Format(document));
 
                 var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
-                var write = GhostEvidenceWriter.Write(build.Document, projectRoot);
+                var write = GhostEvidenceWriter.Write(document, projectRoot);
                 if (!write.Succeeded)
                 {
                     Debug.LogError("Ghost evidence write failed: " + write.ErrorReason);
@@ -163,22 +174,32 @@ namespace BugCam.Editor
                     yield break;
                 }
 
-                try
+                if (document.Success)
                 {
-                    GhostScreenshotCapture.Capture(build.Document, write.RunDirectory);
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogWarning("Ghost screenshot capture: " + ex.Message);
-                }
+                    try
+                    {
+                        GhostScreenshotCapture.Capture(document, write.RunDirectory);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogWarning("Ghost screenshot capture: " + ex.Message);
+                    }
 
-                var session = GhostVisualizationSession.Ensure();
-                session.SetDocument(build.Document, write.RunDirectory, write.MetricsPath);
-                session.IsVisible = true;
-                session.FrameOverview();
+                    var session = GhostVisualizationSession.Ensure();
+                    session.SetDocument(document, write.RunDirectory, write.MetricsPath);
+                    session.IsVisible = true;
+                    session.FrameOverview();
+                }
+                else
+                {
+                    Debug.LogError(
+                        "Ghost evidence host failed (" + document.ErrorCode + "): " +
+                        document.ErrorReason + " evidenceDir=" + write.RunDirectory);
+                }
 
                 Debug.Log(
-                    "BUGCAM_BLOCK_1_5_HOST_COMPLETE evidenceDir=" + write.RunDirectory +
+                    "BUGCAM_BLOCK_1_5_HOST_COMPLETE success=" + document.Success +
+                    " evidenceDir=" + write.RunDirectory +
                     " metrics=" + write.MetricsPath);
                 Cleanup();
             }

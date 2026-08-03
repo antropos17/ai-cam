@@ -135,7 +135,7 @@ namespace BugCam.Core
                 sceneScorePerStep);
         }
 
-        internal static DivergenceResult Failure(string errorReason)
+        public static DivergenceResult Failure(string errorReason)
         {
             return new DivergenceResult(
                 false,

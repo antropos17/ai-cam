@@ -5,8 +5,8 @@ using BugCam.Core;
 namespace BugCam.Evidence
 {
     /// <summary>
-    /// Success-path console numbers for Block 1.5 ghost evidence.
-    /// Pair with <see cref="EpsilonSearchReport.Format"/> after a search completes.
+    /// Console numbers for Block 1.5 ghost evidence.
+    /// Pair with <see cref="GhostEvidenceWriter.FormatHonestSearchReport"/> after a search completes.
     /// </summary>
     public static class GhostEvidenceReport
     {
@@ -17,15 +17,22 @@ namespace BugCam.Evidence
             if (document == null)
             {
                 sb.AppendLine("succeeded=False");
+                sb.AppendLine("errorCode=" + GhostEvidenceErrorCodes.BuildFailed);
                 sb.AppendLine("errorReason=document is null");
                 return sb.ToString();
             }
 
             var search = document.SearchResult;
-            sb.AppendLine("succeeded=True");
+            sb.AppendLine("succeeded=" + document.Success);
+            sb.AppendLine("errorCode=" + (document.ErrorCode ?? string.Empty));
+            sb.AppendLine("errorReason=" + (document.ErrorReason ?? string.Empty));
             sb.AppendLine("schemaVersion=" + document.SchemaVersion);
             sb.AppendLine("kind=" + document.Kind);
             sb.AppendLine("runId=" + document.RunId);
+            sb.AppendLine("unityVersion=" + (document.Environment.UnityVersion ?? string.Empty));
+            sb.AppendLine("gitCommitSha=" + (document.Environment.GitCommitSha ?? string.Empty));
+            sb.AppendLine("gitBranch=" + (document.Environment.GitBranch ?? string.Empty));
+            sb.AppendLine("scenePath=" + (document.Environment.ScenePath ?? string.Empty));
             sb.AppendLine("verdict=" + search.Verdict);
             sb.AppendLine("targetBodyId=" + document.SearchIdentity.TargetBodyId);
             sb.AppendLine(
@@ -39,7 +46,7 @@ namespace BugCam.Evidence
             sb.AppendLine("primaryFanIndex=" + document.PrimaryFanIndex);
 
             sb.AppendLine("hasThresholdEstimate=" + search.HasThresholdEstimate);
-            if (search.HasThresholdEstimate)
+            if (search.HasThresholdEstimate && document.Success)
             {
                 sb.AppendLine(
                     "thresholdEstimateMetres=" + Invariant(search.ThresholdEstimateMetres));
@@ -49,17 +56,50 @@ namespace BugCam.Evidence
                 sb.AppendLine("thresholdEstimateMetres=null");
             }
 
-            sb.AppendLine(
-                "referenceEpsilonMetres=" + Invariant(search.ReferenceEpsilonMetres));
-            sb.AppendLine("referenceIsExactThreshold=" + search.ReferenceIsExactThreshold);
-            sb.AppendLine(
-                "searchRangeStartMetres=" + Invariant(search.SearchRangeStartMetres));
-            sb.AppendLine(
-                "searchRangeCeilingMetres=" + Invariant(search.SearchRangeCeilingMetres));
-            sb.AppendLine(
-                "characterizationCeilingMetres=" +
-                Invariant(search.CharacterizationCeilingMetres));
-            sb.AppendLine("searchFloorMetres=" + Invariant(search.SearchRangeStartMetres));
+            var hasReference = GhostEvidenceWriter.HasReferenceEpsilon(search) && document.Success;
+            sb.AppendLine("hasReferenceEpsilon=" + hasReference);
+            if (hasReference)
+            {
+                sb.AppendLine(
+                    "referenceEpsilonMetres=" + Invariant(search.ReferenceEpsilonMetres));
+            }
+            else
+            {
+                sb.AppendLine("referenceEpsilonMetres=null");
+            }
+
+            sb.AppendLine("referenceIsExactThreshold=False");
+
+            var hasBracket = GhostEvidenceWriter.HasFinalBracketWidth(search) && document.Success;
+            sb.AppendLine("hasFinalBracketWidth=" + hasBracket);
+            if (hasBracket)
+            {
+                sb.AppendLine(
+                    "finalBracketWidthMetres=" + Invariant(search.FinalBracketWidthMetres));
+            }
+            else
+            {
+                sb.AppendLine("finalBracketWidthMetres=null");
+            }
+
+            if (document.Success && search.Succeeded)
+            {
+                sb.AppendLine(
+                    "searchRangeStartMetres=" + Invariant(search.SearchRangeStartMetres));
+                sb.AppendLine(
+                    "searchRangeCeilingMetres=" + Invariant(search.SearchRangeCeilingMetres));
+                sb.AppendLine(
+                    "characterizationCeilingMetres=" +
+                    Invariant(search.CharacterizationCeilingMetres));
+                sb.AppendLine("searchFloorMetres=" + Invariant(search.SearchRangeStartMetres));
+            }
+            else
+            {
+                sb.AppendLine("searchRangeStartMetres=null");
+                sb.AppendLine("searchRangeCeilingMetres=null");
+                sb.AppendLine("characterizationCeilingMetres=null");
+                sb.AppendLine("searchFloorMetres=null");
+            }
 
             var primary = document.PrimaryDivergence;
             sb.AppendLine("primaryAnalyzeSucceeded=" + primary.Succeeded);

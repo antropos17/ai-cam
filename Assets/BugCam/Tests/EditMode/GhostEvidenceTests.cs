@@ -61,7 +61,6 @@ namespace BugCam.Tests
             var rankingType = Type.GetType("BugCam.Evidence.GhostBodyRanking, BugCam.Evidence");
             Assert.That(rankingType, Is.Not.Null);
 
-            // Compare tuples via public Compare.
             var compare = rankingType.GetMethod(
                 "Compare",
                 BindingFlags.Public | BindingFlags.Static);
@@ -73,29 +72,30 @@ namespace BugCam.Tests
             Assert.That(compare.Invoke(null, new object[] { a, b }), Is.GreaterThan(0));
             Assert.That(compare.Invoke(null, new object[] { b, c }), Is.LessThan(0));
 
-            var searchResult = DriveBracketSearch();
-            var document = BuildDocument(searchResult, Vector3.right);
-            Assert.That(document, Is.Not.Null);
+            // Oracle Rank with known ids/errors — exact order, omit zero, Length > 0.
+            var rankOverload = rankingType.GetMethod(
+                "Rank",
+                new[] { typeof(int[]), typeof(float[]), typeof(int) });
+            Assert.That(rankOverload, Is.Not.Null, "Rank(bodyIds, errors, limit) overload required.");
 
-            var ranked = (Array)document.GetType().GetProperty("RankedBodies").GetValue(document);
-            Assert.That(ranked.Length, Is.LessThanOrEqualTo(10));
+            var bodyIds = new[] { 10, 20, 30, 40 };
+            var errors = new[] { 0f, 2f, 2f, 1f };
+            var ranked = (Array)rankOverload.Invoke(null, new object[] { bodyIds, errors, 10 });
+            Assert.That(ranked.Length, Is.GreaterThan(0));
+            Assert.That(ranked.Length, Is.EqualTo(3));
+            Assert.That(Prop<int>(ranked.GetValue(0), "BodyId"), Is.EqualTo(20));
+            Assert.That(Prop<float>(ranked.GetValue(0), "MaxPositionErrorMetres"), Is.EqualTo(2f));
+            Assert.That(Prop<int>(ranked.GetValue(1), "BodyId"), Is.EqualTo(30));
+            Assert.That(Prop<float>(ranked.GetValue(1), "MaxPositionErrorMetres"), Is.EqualTo(2f));
+            Assert.That(Prop<int>(ranked.GetValue(2), "BodyId"), Is.EqualTo(40));
+            Assert.That(Prop<float>(ranked.GetValue(2), "MaxPositionErrorMetres"), Is.EqualTo(1f));
 
-            float previous = float.MaxValue;
-            var previousId = int.MinValue;
             for (var i = 0; i < ranked.Length; i++)
             {
-                var body = ranked.GetValue(i);
-                var error = Prop<float>(body, "MaxPositionErrorMetres");
-                var id = Prop<int>(body, "BodyId");
-                Assert.That(error, Is.GreaterThan(0f), "Zero-error bodies must be omitted.");
-                Assert.That(error, Is.LessThanOrEqualTo(previous + 1e-9f));
-                if (Math.Abs(error - previous) <= 1e-9f && i > 0)
-                {
-                    Assert.That(id, Is.GreaterThanOrEqualTo(previousId));
-                }
-
-                previous = error;
-                previousId = id;
+                Assert.That(
+                    Prop<float>(ranked.GetValue(i), "MaxPositionErrorMetres"),
+                    Is.GreaterThan(0f),
+                    "Zero-error bodies must be omitted.");
             }
         }
 
@@ -110,11 +110,16 @@ namespace BugCam.Tests
             Assert.That(document, Is.Not.Null);
             Assert.That(Arr(document, "Fans").Length, Is.EqualTo(0));
             Assert.That(Prop<bool>(document, "HasPrimaryFan"), Is.False);
+            Assert.That(Prop<bool>(document, "Success"), Is.True);
 
             var json = BuildMetricsJson(document);
             Assert.That(json, Does.Contain("\"retainedFanCount\":0"));
             Assert.That(json, Does.Contain("\"hasThresholdEstimate\":false"));
             Assert.That(json, Does.Contain("\"thresholdEstimateMetres\":null"));
+            Assert.That(json, Does.Contain("\"hasReferenceEpsilon\":false"));
+            Assert.That(json, Does.Contain("\"referenceEpsilonMetres\":null"));
+            Assert.That(json, Does.Contain("\"hasFinalBracketWidth\":false"));
+            Assert.That(json, Does.Contain("\"finalBracketWidthMetres\":null"));
             Assert.That(json, Does.Contain("\"referenceIsExactThreshold\":false"));
         }
 
@@ -155,13 +160,45 @@ namespace BugCam.Tests
 
             Assert.That(json, Does.Contain("\"schemaVersion\":1"));
             Assert.That(json, Does.Contain("\"kind\":\"BugCam.GhostEvidence\""));
+            Assert.That(json, Does.Contain("\"success\":true"));
             Assert.That(json, Does.Contain("\"hasThresholdEstimate\":false"));
             Assert.That(json, Does.Contain("\"thresholdEstimateMetres\":null"));
+            Assert.That(json, Does.Contain("\"referenceEpsilonMetres\":null"));
+            Assert.That(json, Does.Contain("\"finalBracketWidthMetres\":null"));
             Assert.That(json, Does.Contain("\"referenceIsExactThreshold\":false"));
             Assert.That(json, Does.Contain("\"amplificationDefined\":false"));
             Assert.That(json, Does.Contain("\"amplification\":null"));
+            Assert.That(json, Does.Contain("\"unityVersion\":"));
+            Assert.That(json, Does.Contain("\"gitCommitSha\":"));
+            Assert.That(json, Does.Contain("\"gitBranch\":"));
+            Assert.That(json, Does.Contain("\"scenePath\":"));
             Assert.That(json, Does.Not.Contain("NaN"));
             Assert.That(json, Does.Not.Contain("Infinity"));
+        }
+
+        [Test]
+        public void FailedSearchWritesHonestFailureBundle()
+        {
+            var failureType = Type.GetType("BugCam.Core.EpsilonSearchResult, BugCam.Core");
+            var failure = failureType.GetMethod("Failure", new[] { typeof(string) })
+                .Invoke(null, new object[] { "Temporary scene cleanup timed out after 120 frames." });
+
+            var document = BuildDocument(failure, Vector3.right);
+            Assert.That(Prop<bool>(document, "Success"), Is.False);
+            Assert.That(Prop<string>(document, "ErrorCode"), Is.EqualTo("CLEANUP_TIMEOUT"));
+            Assert.That(Arr(document, "Fans").Length, Is.EqualTo(0));
+
+            var json = BuildMetricsJson(document);
+            Assert.That(json, Does.Contain("\"success\":false"));
+            Assert.That(json, Does.Contain("\"errorCode\":\"CLEANUP_TIMEOUT\""));
+            Assert.That(json, Does.Contain("\"retainedFanCount\":0"));
+            Assert.That(json, Does.Contain("\"thresholdEstimateMetres\":null"));
+            Assert.That(json, Does.Contain("\"referenceEpsilonMetres\":null"));
+            Assert.That(json, Does.Contain("\"finalBracketWidthMetres\":null"));
+
+            var console = FormatHonestConsole(document);
+            Assert.That(console, Does.Contain("thresholdEstimateMetres=null").Or.Contain("succeeded=False"));
+            Assert.That(console, Does.Not.Match("thresholdEstimateMetres=0(\r|\n|$)"));
         }
 
         [Test]
@@ -212,6 +249,7 @@ namespace BugCam.Tests
                 var console = File.ReadAllText(Path.Combine(runDir, "report", "console-report.txt"));
                 Assert.That(console, Does.Contain("BUGCAM_BLOCK_1_4_EPSILON_SEARCH"));
                 Assert.That(console, Does.Contain("BUGCAM_BLOCK_1_5_GHOST_EVIDENCE"));
+                Assert.That(console, Does.Not.Match("thresholdEstimateMetres=0(\r|\n|$)"));
             }
             finally
             {
@@ -232,6 +270,22 @@ namespace BugCam.Tests
             Assert.That(text, Does.Contain("BUGCAM_BLOCK_1_5_GHOST_EVIDENCE"));
             Assert.That(text, Does.Contain("succeeded=True"));
             Assert.That(text, Does.Contain("referenceIsExactThreshold=False"));
+        }
+
+        [Test]
+        public void ConsoleReportAgreesWithMetricsNullThreshold()
+        {
+            var searchResult = DriveStableSearch();
+            var document = BuildDocument(searchResult, Vector3.right);
+            var json = BuildMetricsJson(document);
+            var console = FormatHonestConsole(document);
+
+            Assert.That(json, Does.Contain("\"thresholdEstimateMetres\":null"));
+            Assert.That(console, Does.Contain("hasThresholdEstimate=False"));
+            Assert.That(console, Does.Contain("thresholdEstimateMetres=null"));
+            Assert.That(console, Does.Not.Match("thresholdEstimateMetres=0(\r|\n|$)"));
+            Assert.That(console, Does.Contain("referenceEpsilonMetres=null"));
+            Assert.That(console, Does.Contain("finalBracketWidthMetres=null"));
         }
 
         [Test]
@@ -267,6 +321,22 @@ namespace BugCam.Tests
         }
 
         [Test]
+        public void FirstDivergenceMarkerPrefersMaxSpreadBodyId()
+        {
+            var searchResult = DriveBracketSearch();
+            var document = BuildDocument(searchResult, Vector3.right);
+            Assert.That(Prop<bool>(document, "HasPrimaryFan"), Is.True);
+
+            var primary = document.GetType().GetProperty("PrimaryDivergence").GetValue(document);
+            var maxSpreadBodyId = Prop<int>(primary, "MaxSpreadBodyId");
+            Assert.That(maxSpreadBodyId, Is.GreaterThanOrEqualTo(0));
+
+            var drawSet = document.GetType().GetProperty("DrawSet").GetValue(document);
+            Assert.That(Prop<bool>(drawSet, "HasFirstDivergence"), Is.True);
+            Assert.That(Prop<bool>(drawSet, "HasMaxSpread"), Is.True);
+        }
+
+        [Test]
         public void SessionTypeExposesIdempotentLifecycleApi()
         {
             var sessionType = Type.GetType("BugCam.Editor.GhostVisualizationSession, BugCam.Editor");
@@ -285,10 +355,14 @@ namespace BugCam.Tests
         [Test]
         public void OutsideSearchRangeIsPreservedOnHighFanSamples()
         {
-            var searchResult = DriveBracketSearch();
+            // Force reference near ceiling so 1.2× exceeds search ceiling (same oracle as Core).
+            var searchResult = DriveHighFanOutsideSearch();
             var document = BuildDocument(searchResult, Vector3.right);
             var fans = Arr(document, "Fans");
             var ceiling = Prop<float>(searchResult, "SearchRangeCeilingMetres");
+            Assert.That(fans.Length, Is.EqualTo(15));
+            Assert.That(ceiling, Is.GreaterThan(0f));
+
             var sawOutside = false;
             for (var i = 0; i < fans.Length; i++)
             {
@@ -302,10 +376,7 @@ namespace BugCam.Tests
                 }
             }
 
-            // With reference around bracket divergent (~4e-4) and ceiling 1e-2, 1.2× may still
-            // be below ceiling. Contract is flag preservation when above ceiling.
-            Assert.That(fans.Length, Is.EqualTo(15));
-            Assert.That(sawOutside || ceiling > 0f, Is.True);
+            Assert.That(sawOutside, Is.True, "Fixture must include at least one fan ε > ceiling.");
         }
 
         [Test]
@@ -323,11 +394,18 @@ namespace BugCam.Tests
             var identityType = Type.GetType("BugCam.Evidence.GhostSearchIdentity, BugCam.Evidence");
             var settingsType = Type.GetType("BugCam.Core.DivergenceSettings, BugCam.Core");
             var strategyType = Type.GetType("BugCam.Core.EpsilonSearchStrategy, BugCam.Core");
+            var envType = Type.GetType("BugCam.Evidence.GhostRunEnvironment, BugCam.Evidence");
             Assert.That(builderType, Is.Not.Null);
 
             var strategy = Enum.ToObject(strategyType, 0);
             var identity = Activator.CreateInstance(identityType, 49, axis, strategy);
             var settings = settingsType.GetMethod("CreateDefault").Invoke(null, null);
+            var environment = Activator.CreateInstance(
+                envType,
+                "test-unity",
+                "test-sha",
+                "test-branch",
+                "Assets/TestScene.unity");
 
             try
             {
@@ -339,8 +417,11 @@ namespace BugCam.Tests
                         identityType,
                         settingsType,
                         typeof(float[]),
-                        typeof(string)
-                    }).Invoke(null, new object[] { searchResult, identity, settings, null, "test-run" });
+                        typeof(string),
+                        envType
+                    }).Invoke(
+                    null,
+                    new object[] { searchResult, identity, settings, null, "test-run", environment });
 
                 Assert.That(Prop<bool>(build, "Succeeded"), Is.True, Prop<string>(build, "ErrorReason"));
                 return Prop<object>(build, "Document");
@@ -362,6 +443,13 @@ namespace BugCam.Tests
         {
             var writerType = Type.GetType("BugCam.Evidence.GhostEvidenceWriter, BugCam.Evidence");
             return (string)writerType.GetMethod("BuildSummaryMarkdown")
+                .Invoke(null, new object[] { document });
+        }
+
+        private static string FormatHonestConsole(object document)
+        {
+            var writerType = Type.GetType("BugCam.Evidence.GhostEvidenceWriter, BugCam.Evidence");
+            return (string)writerType.GetMethod("FormatHonestConsoleReport")
                 .Invoke(null, new object[] { document });
         }
 
@@ -391,6 +479,22 @@ namespace BugCam.Tests
                 }
 
                 return NeedsFrames(phase) ? Framed(false, epsilon, axis) : Compact(false);
+            });
+        }
+
+        private static object DriveHighFanOutsideSearch()
+        {
+            var search = CreateSearch();
+            return Drive(search, (phase, epsilon, axis, isBaseline) =>
+            {
+                if (isBaseline)
+                {
+                    return BaselineOutcome();
+                }
+
+                // Only the search ceiling diverges → reference ≈ ceiling so 1.2× exceeds it.
+                var diverged = epsilon >= 1e-2f - 1e-12f;
+                return NeedsFrames(phase) ? Framed(diverged, epsilon, axis) : Compact(diverged);
             });
         }
 

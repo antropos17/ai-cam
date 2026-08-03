@@ -326,6 +326,8 @@ namespace BugCam.Editor
 
             EpsilonSearchResult searchResult = default;
             var identity = new GhostSearchIdentity(49, NormalizeAxis(_searchAxis), _strategy);
+            var environment = GhostRunEnvironment.Capture(
+                UnityEngine.SceneManagement.SceneManager.GetActiveScene().path);
 
             try
             {
@@ -348,26 +350,36 @@ namespace BugCam.Editor
                     scales);
 
                 searchResult = runner.LastResult;
-                Debug.Log(EpsilonSearchReport.Format(searchResult));
-
-                if (!searchResult.Succeeded)
-                {
-                    error = searchResult.ErrorReason;
-                    yield break;
-                }
+                Debug.Log(GhostEvidenceWriter.FormatHonestSearchReport(
+                    searchResult,
+                    searchResult.Succeeded));
 
                 var build = GhostEvidenceBuilder.Build(
                     searchResult,
                     identity,
                     settings,
-                    scales);
-                if (!build.Succeeded)
+                    scales,
+                    null,
+                    environment);
+                if (!build.Succeeded || build.Document == null)
                 {
-                    error = build.ErrorReason;
-                    yield break;
+                    // Last-resort failure bundle when Build cannot produce a document.
+                    document = GhostEvidenceBuilder.CreateFailureDocument(
+                        searchResult,
+                        identity,
+                        searchResult.Succeeded
+                            ? GhostEvidenceErrorCodes.BuildFailed
+                            : GhostEvidenceBuilder.ResolveSearchErrorCode(searchResult.ErrorReason),
+                        build.ErrorReason ?? searchResult.ErrorReason,
+                        settings.GhostBodyLimit,
+                        null,
+                        environment);
+                }
+                else
+                {
+                    document = build.Document;
                 }
 
-                document = build.Document;
                 Debug.Log(GhostEvidenceReport.Format(document));
 
                 var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
@@ -378,13 +390,20 @@ namespace BugCam.Editor
                     yield break;
                 }
 
-                try
+                if (document.Success)
                 {
-                    GhostScreenshotCapture.Capture(document, write.RunDirectory);
+                    try
+                    {
+                        GhostScreenshotCapture.Capture(document, write.RunDirectory);
+                    }
+                    catch (Exception captureEx)
+                    {
+                        Debug.LogWarning("Ghost screenshot capture: " + captureEx.Message);
+                    }
                 }
-                catch (Exception captureEx)
+                else
                 {
-                    Debug.LogWarning("Ghost screenshot capture: " + captureEx.Message);
+                    error = document.ErrorCode + ": " + document.ErrorReason;
                 }
             }
             finally
@@ -392,24 +411,31 @@ namespace BugCam.Editor
                 _isRunning = false;
             }
 
+            if (document != null && write.Succeeded)
+            {
+                _document = document;
+                _evidenceDir = write.RunDirectory;
+                _metricsPath = write.MetricsPath;
+                _summaryText = GhostEvidenceWriter.BuildSummaryMarkdown(document);
+
+                var session = GhostVisualizationSession.Ensure();
+                session.SetDocument(document, write.RunDirectory, write.MetricsPath);
+                session.ShowBaseline = _showBaseline;
+                session.ShowFans = _showFans;
+                session.IsVisible = document.Success;
+                if (document.Success)
+                {
+                    session.FrameOverview();
+                }
+            }
+
             if (!string.IsNullOrEmpty(error))
             {
-                _status = "Failed: " + error;
+                _status = "Failed (evidence written): " + error +
+                          (write.Succeeded ? "; evidence=" + write.RunDirectory : string.Empty);
                 Repaint();
                 yield break;
             }
-
-            _document = document;
-            _evidenceDir = write.RunDirectory;
-            _metricsPath = write.MetricsPath;
-            _summaryText = GhostEvidenceWriter.BuildSummaryMarkdown(document);
-
-            var session = GhostVisualizationSession.Ensure();
-            session.SetDocument(document, write.RunDirectory, write.MetricsPath);
-            session.ShowBaseline = _showBaseline;
-            session.ShowFans = _showFans;
-            session.IsVisible = true;
-            session.FrameOverview();
 
             _status =
                 "Success. Verdict=" + document.SearchResult.Verdict +

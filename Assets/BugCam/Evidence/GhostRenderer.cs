@@ -127,16 +127,14 @@ namespace BugCam.Evidence
                 var divergence = primary.Divergence;
                 if (divergence.Succeeded && divergence.HasSignificantDivergence)
                 {
+                    // First-divergence marker uses MaxSpreadBodyId when known; AffectedBodyIds are
+                    // ID-sorted (not first-to-diverge), so never prefer AffectedBodyIds[0].
+                    var markerBodyId = divergence.MaxSpreadBodyId >= 0
+                        ? divergence.MaxSpreadBodyId
+                        : ResolveFirstAffected(divergence);
                     var bodyIndex = GhostTrajectorySampler.FindBodyIndex(
                         primary.Run,
-                        divergence.MaxSpreadBodyId >= 0
-                            ? divergence.MaxSpreadBodyId
-                            : ResolveFirstAffected(divergence));
-                    // Prefer max-spread body for first-divergence marker when available at that frame.
-                    var markerBodyId = divergence.AffectedBodyCount > 0
-                        ? divergence.AffectedBodyIds[0]
-                        : divergence.MaxSpreadBodyId;
-                    bodyIndex = GhostTrajectorySampler.FindBodyIndex(primary.Run, markerBodyId);
+                        markerBodyId);
 
                     if (bodyIndex >= 0 &&
                         GhostTrajectorySampler.TryGetBodyPosition(

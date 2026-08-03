@@ -41,4 +41,18 @@ namespace BugCam.Evidence
             return RunsRelativeRoot + "/" + (runId ?? string.Empty);
         }
     }
+
+    /// <summary>Stable machine-readable error codes for failed evidence bundles (§15).</summary>
+    public static class GhostEvidenceErrorCodes
+    {
+        public const string None = "";
+
+        public const string SearchFailed = "SEARCH_FAILED";
+
+        public const string CleanupTimeout = "CLEANUP_TIMEOUT";
+
+        public const string BuildFailed = "BUILD_FAILED";
+
+        public const string WriteFailed = "WRITE_FAILED";
+    }
 }

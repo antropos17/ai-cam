@@ -9,7 +9,7 @@ namespace BugCam.Evidence
 {
     /// <summary>
     /// Atomic evidence-bundle writer. Invariant culture. No NaN/Inf in JSON —
-    /// unavailable values use null / boolean flags.
+    /// unavailable values use null / boolean flags. Never fabricate zeros (§15).
     /// </summary>
     public static class GhostEvidenceWriter
     {
@@ -55,9 +55,7 @@ namespace BugCam.Evidence
                 AtomicWrite(summaryPath, BuildSummaryMarkdown(document));
                 AtomicWrite(
                     consolePath,
-                    EpsilonSearchReport.Format(document.SearchResult) +
-                    Environment.NewLine +
-                    GhostEvidenceReport.Format(document));
+                    FormatHonestConsoleReport(document));
 
                 // Checkpoint pointer: last-run path for Block 1.5 gate evidence.
                 var checkpointPointer = Path.Combine(checkpointDir, "last-run.txt");
@@ -84,14 +82,25 @@ namespace BugCam.Evidence
             var search = document.SearchResult;
             var identity = document.SearchIdentity;
             var primary = document.PrimaryDivergence;
+            var env = document.Environment;
+            var hasReference = HasReferenceEpsilon(search);
+            var hasBracketWidth = HasFinalBracketWidth(search);
 
             sb.Append('{');
             WriteInt(sb, "schemaVersion", document.SchemaVersion, true);
             WriteString(sb, "kind", document.Kind);
             WriteString(sb, "runId", document.RunId);
             WriteString(sb, "builtUtc", document.BuiltUtc.ToString("o", CultureInfo.InvariantCulture));
+            WriteBool(sb, "success", document.Success);
+            WriteString(sb, "errorCode", document.ErrorCode ?? string.Empty);
+            WriteString(sb, "errorReason", document.ErrorReason ?? string.Empty);
             WriteString(sb, "verdict", search.Verdict);
             WriteString(sb, "verdictKind", search.VerdictKind.ToString());
+
+            WriteString(sb, "unityVersion", env.UnityVersion ?? string.Empty);
+            WriteString(sb, "gitCommitSha", env.GitCommitSha ?? string.Empty);
+            WriteString(sb, "gitBranch", env.GitBranch ?? string.Empty);
+            WriteString(sb, "scenePath", env.ScenePath ?? string.Empty);
 
             sb.Append(",\"searchIdentity\":{");
             WriteInt(sb, "targetBodyId", identity.TargetBodyId, true);
@@ -100,14 +109,25 @@ namespace BugCam.Evidence
             sb.Append('}');
 
             sb.Append(",\"ranges\":{");
-            WriteFloat(sb, "searchFloorMetres", search.SearchRangeStartMetres, true);
-            WriteFloat(sb, "searchRangeStartMetres", search.SearchRangeStartMetres);
-            WriteFloat(sb, "searchRangeCeilingMetres", search.SearchRangeCeilingMetres);
-            WriteFloat(sb, "characterizationCeilingMetres", search.CharacterizationCeilingMetres);
+            if (document.Success && search.Succeeded)
+            {
+                WriteFloat(sb, "searchFloorMetres", search.SearchRangeStartMetres, true);
+                WriteFloat(sb, "searchRangeStartMetres", search.SearchRangeStartMetres);
+                WriteFloat(sb, "searchRangeCeilingMetres", search.SearchRangeCeilingMetres);
+                WriteFloat(sb, "characterizationCeilingMetres", search.CharacterizationCeilingMetres);
+            }
+            else
+            {
+                WriteNull(sb, "searchFloorMetres", true);
+                WriteNull(sb, "searchRangeStartMetres");
+                WriteNull(sb, "searchRangeCeilingMetres");
+                WriteNull(sb, "characterizationCeilingMetres");
+            }
+
             sb.Append('}');
 
-            WriteBool(sb, "hasThresholdEstimate", search.HasThresholdEstimate);
-            if (search.HasThresholdEstimate)
+            WriteBool(sb, "hasThresholdEstimate", search.HasThresholdEstimate && document.Success);
+            if (search.HasThresholdEstimate && document.Success)
             {
                 WriteFloat(sb, "thresholdEstimateMetres", search.ThresholdEstimateMetres);
             }
@@ -116,16 +136,20 @@ namespace BugCam.Evidence
                 WriteNull(sb, "thresholdEstimateMetres");
             }
 
-            WriteFloat(sb, "referenceEpsilonMetres", search.ReferenceEpsilonMetres);
-            WriteBool(sb, "referenceIsExactThreshold", search.ReferenceIsExactThreshold);
-            // Contract: always false — never claim an exact mathematical threshold.
-            if (search.ReferenceIsExactThreshold)
+            WriteBool(sb, "hasReferenceEpsilon", hasReference && document.Success);
+            if (hasReference && document.Success)
             {
-                // Honesty: still emit the Core value, but builders must keep this false.
+                WriteFloat(sb, "referenceEpsilonMetres", search.ReferenceEpsilonMetres);
+            }
+            else
+            {
+                WriteNull(sb, "referenceEpsilonMetres");
             }
 
-            WriteBool(sb, "hasLargestStableEpsilon", search.HasLargestStableEpsilon);
-            if (search.HasLargestStableEpsilon)
+            WriteBool(sb, "referenceIsExactThreshold", false);
+
+            WriteBool(sb, "hasLargestStableEpsilon", search.HasLargestStableEpsilon && document.Success);
+            if (search.HasLargestStableEpsilon && document.Success)
             {
                 WriteFloat(sb, "largestStableEpsilonMetres", search.LargestStableEpsilonMetres);
             }
@@ -134,8 +158,11 @@ namespace BugCam.Evidence
                 WriteNull(sb, "largestStableEpsilonMetres");
             }
 
-            WriteBool(sb, "hasSmallestDivergentEpsilon", search.HasSmallestDivergentEpsilon);
-            if (search.HasSmallestDivergentEpsilon)
+            WriteBool(
+                sb,
+                "hasSmallestDivergentEpsilon",
+                search.HasSmallestDivergentEpsilon && document.Success);
+            if (search.HasSmallestDivergentEpsilon && document.Success)
             {
                 WriteFloat(sb, "smallestDivergentEpsilonMetres", search.SmallestDivergentEpsilonMetres);
             }
@@ -144,7 +171,16 @@ namespace BugCam.Evidence
                 WriteNull(sb, "smallestDivergentEpsilonMetres");
             }
 
-            WriteFloat(sb, "finalBracketWidthMetres", search.FinalBracketWidthMetres);
+            WriteBool(sb, "hasFinalBracketWidth", hasBracketWidth && document.Success);
+            if (hasBracketWidth && document.Success)
+            {
+                WriteFloat(sb, "finalBracketWidthMetres", search.FinalBracketWidthMetres);
+            }
+            else
+            {
+                WriteNull(sb, "finalBracketWidthMetres");
+            }
+
             WriteInt(sb, "ghostBodyLimit", document.GhostBodyLimit);
             WriteBool(sb, "hasPrimaryFan", document.HasPrimaryFan);
             WriteInt(sb, "primaryFanIndex", document.PrimaryFanIndex);
@@ -171,14 +207,15 @@ namespace BugCam.Evidence
             }
 
             sb.Append(",\"affectedBodyIds\":[");
-            for (var i = 0; i < primary.AffectedBodyIds.Length; i++)
+            var affected = primary.AffectedBodyIds ?? Array.Empty<int>();
+            for (var i = 0; i < affected.Length; i++)
             {
                 if (i > 0)
                 {
                     sb.Append(',');
                 }
 
-                sb.Append(primary.AffectedBodyIds[i].ToString(CultureInfo.InvariantCulture));
+                sb.Append(affected[i].ToString(CultureInfo.InvariantCulture));
             }
 
             sb.Append("]}");
@@ -255,20 +292,40 @@ namespace BugCam.Evidence
             sb.AppendLine("- **Kind:** " + document.Kind);
             sb.AppendLine("- **Schema:** " + document.SchemaVersion);
             sb.AppendLine("- **Run id:** `" + document.RunId + "`");
+            sb.AppendLine("- **Success:** " + document.Success);
+            if (!document.Success)
+            {
+                sb.AppendLine("- **Error code:** `" + document.ErrorCode + "`");
+                sb.AppendLine("- **Error reason:** " + document.ErrorReason);
+            }
+
             sb.AppendLine("- **Verdict:** " + search.Verdict);
             sb.AppendLine(
                 "- **Search identity:** body " + document.SearchIdentity.TargetBodyId +
                 ", axis " + FormatAxisLabel(document.SearchIdentity.SearchAxis) +
                 ", strategy " + document.SearchIdentity.Strategy);
-            sb.AppendLine(
-                "- **Search floor / range:** " +
-                MetresLabel(search.SearchRangeStartMetres) + " … " +
-                MetresLabel(search.SearchRangeCeilingMetres));
-            sb.AppendLine(
-                "- **Characterization range ceiling:** " +
-                MetresLabel(search.CharacterizationCeilingMetres));
+            sb.AppendLine("- **Unity version:** " + (document.Environment.UnityVersion ?? string.Empty));
+            sb.AppendLine("- **Git commit:** `" + (document.Environment.GitCommitSha ?? string.Empty) + "`");
+            sb.AppendLine("- **Git branch:** `" + (document.Environment.GitBranch ?? string.Empty) + "`");
+            sb.AppendLine("- **Scene:** `" + (document.Environment.ScenePath ?? string.Empty) + "`");
 
-            if (search.HasThresholdEstimate)
+            if (document.Success && search.Succeeded)
+            {
+                sb.AppendLine(
+                    "- **Search floor / range:** " +
+                    MetresLabel(search.SearchRangeStartMetres) + " … " +
+                    MetresLabel(search.SearchRangeCeilingMetres));
+                sb.AppendLine(
+                    "- **Characterization range ceiling:** " +
+                    MetresLabel(search.CharacterizationCeilingMetres));
+            }
+            else
+            {
+                sb.AppendLine("- **Search floor / range:** unavailable");
+                sb.AppendLine("- **Characterization range ceiling:** unavailable");
+            }
+
+            if (search.HasThresholdEstimate && document.Success)
             {
                 sb.AppendLine(
                     "- **Threshold Estimate:** " +
@@ -280,17 +337,25 @@ namespace BugCam.Evidence
                 sb.AppendLine("- **Threshold Estimate:** unavailable (`hasThresholdEstimate=false`)");
             }
 
-            sb.AppendLine(
-                "- **Reference Epsilon:** " +
-                MetresLabel(search.ReferenceEpsilonMetres) +
-                " (`referenceIsExactThreshold=" + search.ReferenceIsExactThreshold + "`)");
+            if (HasReferenceEpsilon(search) && document.Success)
+            {
+                sb.AppendLine(
+                    "- **Reference Epsilon:** " +
+                    MetresLabel(search.ReferenceEpsilonMetres) +
+                    " (`referenceIsExactThreshold=false`)");
+            }
+            else
+            {
+                sb.AppendLine("- **Reference Epsilon:** unavailable");
+            }
+
             sb.AppendLine(
                 "- **Retained fans:** " + document.Fans.Length +
-                " (STABLE fabricates none)");
+                " (STABLE fabricates none; failures emit empty fans)");
             sb.AppendLine("- **Ghost body limit:** " + document.GhostBodyLimit);
             sb.AppendLine("- **Ranked bodies drawn:** " + document.RankedBodies.Length);
 
-            if (primary.Succeeded && primary.HasSignificantDivergence)
+            if (document.Success && primary.Succeeded && primary.HasSignificantDivergence)
             {
                 sb.AppendLine("- **First divergence frame:** " + primary.FirstDivergenceFrame);
                 sb.AppendLine("- **Max spread:** " + MetresLabel(primary.MaxSpreadMetres));
@@ -323,6 +388,111 @@ namespace BugCam.Evidence
             return sb.ToString();
         }
 
+        /// <summary>
+        /// Console report that agrees with metrics.json — never embeds fabricated
+        /// thresholdEstimateMetres=0 when hasThresholdEstimate=false.
+        /// </summary>
+        public static string FormatHonestConsoleReport(GhostEvidenceDocument document)
+        {
+            return FormatHonestSearchReport(document.SearchResult, document.Success) +
+                   Environment.NewLine +
+                   GhostEvidenceReport.Format(document);
+        }
+
+        public static string FormatHonestSearchReport(EpsilonSearchResult result, bool documentSuccess)
+        {
+            var sb = new StringBuilder(1024);
+            sb.AppendLine("BUGCAM_BLOCK_1_4_EPSILON_SEARCH");
+            sb.AppendLine("succeeded=" + (result.Succeeded && documentSuccess));
+            if (!result.Succeeded)
+            {
+                sb.AppendLine("errorReason=" + (result.ErrorReason ?? string.Empty));
+                return sb.ToString();
+            }
+
+            if (!documentSuccess)
+            {
+                sb.AppendLine("errorReason=document success=false");
+            }
+
+            sb.AppendLine("verdict=" + result.Verdict);
+            sb.AppendLine("searchRangeStartMetres=" + InvariantOrNull(result.SearchRangeStartMetres));
+            sb.AppendLine("searchRangeCeilingMetres=" + InvariantOrNull(result.SearchRangeCeilingMetres));
+            sb.AppendLine(
+                "searchRangeStartMillimetres=" +
+                InvariantOrNull(result.SearchRangeStartMetres * 1000f));
+            sb.AppendLine(
+                "searchRangeCeilingMillimetres=" +
+                InvariantOrNull(result.SearchRangeCeilingMetres * 1000f));
+            sb.AppendLine(
+                "characterizationCeilingMetres=" +
+                InvariantOrNull(result.CharacterizationCeilingMetres));
+            sb.AppendLine(
+                "characterizationCeilingMillimetres=" +
+                InvariantOrNull(result.CharacterizationCeilingMetres * 1000f));
+            sb.AppendLine("hasLargestStableEpsilon=" + result.HasLargestStableEpsilon);
+            sb.AppendLine(
+                "largestStableEpsilonMetres=" +
+                (result.HasLargestStableEpsilon
+                    ? InvariantOrNull(result.LargestStableEpsilonMetres)
+                    : "null"));
+            sb.AppendLine("hasSmallestDivergentEpsilon=" + result.HasSmallestDivergentEpsilon);
+            sb.AppendLine(
+                "smallestDivergentEpsilonMetres=" +
+                (result.HasSmallestDivergentEpsilon
+                    ? InvariantOrNull(result.SmallestDivergentEpsilonMetres)
+                    : "null"));
+            sb.AppendLine("hasThresholdEstimate=" + result.HasThresholdEstimate);
+            sb.AppendLine(
+                "thresholdEstimateMetres=" +
+                (result.HasThresholdEstimate
+                    ? InvariantOrNull(result.ThresholdEstimateMetres)
+                    : "null"));
+            sb.AppendLine("hasReferenceEpsilon=" + HasReferenceEpsilon(result));
+            sb.AppendLine(
+                "referenceEpsilonMetres=" +
+                (HasReferenceEpsilon(result)
+                    ? InvariantOrNull(result.ReferenceEpsilonMetres)
+                    : "null"));
+            sb.AppendLine("referenceIsExactThreshold=False");
+            sb.AppendLine("hasFinalBracketWidth=" + HasFinalBracketWidth(result));
+            sb.AppendLine(
+                "finalBracketWidthMetres=" +
+                (HasFinalBracketWidth(result)
+                    ? InvariantOrNull(result.FinalBracketWidthMetres)
+                    : "null"));
+            sb.AppendLine("ladderCount=" + result.LadderSummaries.Length);
+            sb.AppendLine("exponentialCount=" + result.ExponentialSummaries.Length);
+            sb.AppendLine("bisectionCount=" + result.BisectionSummaries.Length);
+            sb.AppendLine("fanCount=" + result.FanSummaries.Length);
+            sb.AppendLine("retainedFanRunCount=" + result.FanRuns.Length);
+            sb.AppendLine("cacheHitCount=" + result.CacheHitCount);
+            sb.AppendLine("physicalProbeCount=" + result.PhysicalProbeCount);
+            return sb.ToString();
+        }
+
+        public static bool HasReferenceEpsilon(EpsilonSearchResult search)
+        {
+            if (!search.Succeeded)
+            {
+                return false;
+            }
+
+            var value = search.ReferenceEpsilonMetres;
+            return value > 0f && !float.IsNaN(value) && !float.IsInfinity(value);
+        }
+
+        public static bool HasFinalBracketWidth(EpsilonSearchResult search)
+        {
+            if (!search.Succeeded || !search.HasThresholdEstimate)
+            {
+                return false;
+            }
+
+            var value = search.FinalBracketWidthMetres;
+            return !float.IsNaN(value) && !float.IsInfinity(value) && value >= 0f;
+        }
+
         private static string BuildManifestJson(GhostEvidenceDocument document, string runDir)
         {
             var sb = new StringBuilder(512);
@@ -330,6 +500,8 @@ namespace BugCam.Evidence
             WriteInt(sb, "schemaVersion", document.SchemaVersion, true);
             WriteString(sb, "kind", document.Kind);
             WriteString(sb, "runId", document.RunId);
+            WriteBool(sb, "success", document.Success);
+            WriteString(sb, "errorCode", document.ErrorCode ?? string.Empty);
             WriteString(sb, "runDirectory", runDir.Replace('\\', '/'));
             WriteString(sb, "metricsFile", GhostEvidenceSchema.MetricsFileName);
             WriteString(sb, "summaryFile", GhostEvidenceSchema.SummaryFileName);
@@ -392,9 +564,14 @@ namespace BugCam.Evidence
             sb.Append('"').Append(name).Append("\":\"").Append(Escape(value)).Append('"');
         }
 
-        private static void WriteNull(StringBuilder sb, string name)
+        private static void WriteNull(StringBuilder sb, string name, bool first = false)
         {
-            sb.Append(",\"").Append(name).Append("\":null");
+            if (!first)
+            {
+                sb.Append(',');
+            }
+
+            sb.Append('"').Append(name).Append("\":null");
         }
 
         private static void WriteFloat(StringBuilder sb, string name, float value, bool first = false)
@@ -444,6 +621,16 @@ namespace BugCam.Evidence
             if (float.IsNaN(value) || float.IsInfinity(value))
             {
                 return "n/a";
+            }
+
+            return value.ToString("R", CultureInfo.InvariantCulture);
+        }
+
+        private static string InvariantOrNull(float value)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value))
+            {
+                return "null";
             }
 
             return value.ToString("R", CultureInfo.InvariantCulture);

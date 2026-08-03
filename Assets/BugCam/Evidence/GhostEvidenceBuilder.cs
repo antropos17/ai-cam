@@ -9,6 +9,7 @@ namespace BugCam.Evidence
     /// Single source of truth for Block 1.5 ghost evidence.
     /// Re-analyzes baseline vs each retained fan; never fabricates fans for STABLE;
     /// primary selection is deterministic (1.0× search-axis fan preferred).
+    /// Failed searches / build failures still produce a valid success=false bundle (§15).
     /// </summary>
     public static class GhostEvidenceBuilder
     {
@@ -24,7 +25,8 @@ namespace BugCam.Evidence
             GhostSearchIdentity searchIdentity,
             DivergenceSettings settings,
             float[] bodyScalesMetres = null,
-            string runId = null)
+            string runId = null,
+            GhostRunEnvironment environment = default)
         {
             if (settings == null)
             {
@@ -37,7 +39,8 @@ namespace BugCam.Evidence
                 settings.ToThresholds(),
                 settings.GhostBodyLimit,
                 bodyScalesMetres,
-                runId);
+                runId,
+                environment);
         }
 
         public static GhostEvidenceBuildResult Build(
@@ -46,29 +49,60 @@ namespace BugCam.Evidence
             DivergenceThresholds thresholds,
             int ghostBodyLimit,
             float[] bodyScalesMetres = null,
-            string runId = null)
+            string runId = null,
+            GhostRunEnvironment environment = default)
         {
             if (!searchResult.Succeeded)
             {
-                return GhostEvidenceBuildResult.Failure(
-                    "Search did not succeed: " + searchResult.ErrorReason);
+                return GhostEvidenceBuildResult.Success(
+                    CreateFailureDocument(
+                        searchResult,
+                        searchIdentity,
+                        ResolveSearchErrorCode(searchResult.ErrorReason),
+                        searchResult.ErrorReason,
+                        ghostBodyLimit > 0 ? ghostBodyLimit : 10,
+                        runId,
+                        environment));
             }
 
             if (!searchResult.BaselineRun.Succeeded)
             {
-                return GhostEvidenceBuildResult.Failure(
-                    "Baseline run is required for ghost evidence.");
+                return GhostEvidenceBuildResult.Success(
+                    CreateFailureDocument(
+                        searchResult,
+                        searchIdentity,
+                        GhostEvidenceErrorCodes.BuildFailed,
+                        "Baseline run is required for ghost evidence.",
+                        ghostBodyLimit > 0 ? ghostBodyLimit : 10,
+                        runId,
+                        environment));
             }
 
             var thresholdError = thresholds.Validate();
             if (!string.IsNullOrEmpty(thresholdError))
             {
-                return GhostEvidenceBuildResult.Failure(thresholdError);
+                return GhostEvidenceBuildResult.Success(
+                    CreateFailureDocument(
+                        searchResult,
+                        searchIdentity,
+                        GhostEvidenceErrorCodes.BuildFailed,
+                        thresholdError,
+                        ghostBodyLimit > 0 ? ghostBodyLimit : 10,
+                        runId,
+                        environment));
             }
 
             if (ghostBodyLimit <= 0)
             {
-                return GhostEvidenceBuildResult.Failure("GhostBodyLimit must be positive.");
+                return GhostEvidenceBuildResult.Success(
+                    CreateFailureDocument(
+                        searchResult,
+                        searchIdentity,
+                        GhostEvidenceErrorCodes.BuildFailed,
+                        "GhostBodyLimit must be positive.",
+                        10,
+                        runId,
+                        environment));
             }
 
             // STABLE ⇒ no fabricated fans. Honor Core retention exactly.
@@ -79,25 +113,46 @@ namespace BugCam.Evidence
             {
                 if (retainedFans.Length != 0 || fanSummaries.Length != 0)
                 {
-                    return GhostEvidenceBuildResult.Failure(
-                        "STABLE WITHIN TESTED RANGE must not retain fabricated fan runs.");
+                    return GhostEvidenceBuildResult.Success(
+                        CreateFailureDocument(
+                            searchResult,
+                            searchIdentity,
+                            GhostEvidenceErrorCodes.BuildFailed,
+                            "STABLE WITHIN TESTED RANGE must not retain fabricated fan runs.",
+                            ghostBodyLimit,
+                            runId,
+                            environment));
                 }
             }
 
             if (retainedFans.Length != fanSummaries.Length)
             {
-                return GhostEvidenceBuildResult.Failure(
-                    "FanRuns and FanSummaries length mismatch (" +
-                    retainedFans.Length + " vs " + fanSummaries.Length + ").");
+                return GhostEvidenceBuildResult.Success(
+                    CreateFailureDocument(
+                        searchResult,
+                        searchIdentity,
+                        GhostEvidenceErrorCodes.BuildFailed,
+                        "FanRuns and FanSummaries length mismatch (" +
+                        retainedFans.Length + " vs " + fanSummaries.Length + ").",
+                        ghostBodyLimit,
+                        runId,
+                        environment));
             }
 
             if (retainedFans.Length > 0 &&
                 retainedFans.Length != EpsilonSearchSettings.RequiredFanRunCount)
             {
-                return GhostEvidenceBuildResult.Failure(
-                    "Retained fan count must be 0 or exactly " +
-                    EpsilonSearchSettings.RequiredFanRunCount +
-                    ", got " + retainedFans.Length + ".");
+                return GhostEvidenceBuildResult.Success(
+                    CreateFailureDocument(
+                        searchResult,
+                        searchIdentity,
+                        GhostEvidenceErrorCodes.BuildFailed,
+                        "Retained fan count must be 0 or exactly " +
+                        EpsilonSearchSettings.RequiredFanRunCount +
+                        ", got " + retainedFans.Length + ".",
+                        ghostBodyLimit,
+                        runId,
+                        environment));
             }
 
             var fans = new GhostFanEvidence[retainedFans.Length];
@@ -109,8 +164,15 @@ namespace BugCam.Evidence
                 var summary = fanSummaries[i];
                 if (!run.Succeeded)
                 {
-                    return GhostEvidenceBuildResult.Failure(
-                        "Fan run[" + i + "] did not succeed: " + run.ErrorReason);
+                    return GhostEvidenceBuildResult.Success(
+                        CreateFailureDocument(
+                            searchResult,
+                            searchIdentity,
+                            GhostEvidenceErrorCodes.BuildFailed,
+                            "Fan run[" + i + "] did not succeed: " + run.ErrorReason,
+                            ghostBodyLimit,
+                            runId,
+                            environment));
                 }
 
                 // Preserve OutsideSearchRange from Core — never clamp.
@@ -125,9 +187,16 @@ namespace BugCam.Evidence
                 // Fan order contract: multiplier-major × X/Y/Z (matches Core BuildFanTables).
                 if (!AxesEqual(summary.Axis, expectedAxis) && !AxesEqual(run.Perturbation.Axis, expectedAxis))
                 {
-                    return GhostEvidenceBuildResult.Failure(
-                        "Fan order mismatch at index " + i +
-                        ": expected axis " + AxisName(expectedAxis) + ".");
+                    return GhostEvidenceBuildResult.Success(
+                        CreateFailureDocument(
+                            searchResult,
+                            searchIdentity,
+                            GhostEvidenceErrorCodes.BuildFailed,
+                            "Fan order mismatch at index " + i +
+                            ": expected axis " + AxisName(expectedAxis) + ".",
+                            ghostBodyLimit,
+                            runId,
+                            environment));
                 }
 
                 var divergence = DivergenceEngine.Analyze(
@@ -137,8 +206,15 @@ namespace BugCam.Evidence
                     thresholds);
                 if (!divergence.Succeeded)
                 {
-                    return GhostEvidenceBuildResult.Failure(
-                        "Re-analyze fan[" + i + "] failed: " + divergence.ErrorReason);
+                    return GhostEvidenceBuildResult.Success(
+                        CreateFailureDocument(
+                            searchResult,
+                            searchIdentity,
+                            GhostEvidenceErrorCodes.BuildFailed,
+                            "Re-analyze fan[" + i + "] failed: " + divergence.ErrorReason,
+                            ghostBodyLimit,
+                            runId,
+                            environment));
                 }
 
                 divergences[i] = divergence;
@@ -182,7 +258,11 @@ namespace BugCam.Evidence
                 fans,
                 ranked,
                 primaryDivergence,
-                GhostDrawSet.Empty);
+                GhostDrawSet.Empty,
+                true,
+                GhostEvidenceErrorCodes.None,
+                string.Empty,
+                environment);
 
             var drawSet = GhostRenderer.BuildDrawSet(document);
             document = new GhostEvidenceDocument(
@@ -195,9 +275,62 @@ namespace BugCam.Evidence
                 fans,
                 ranked,
                 primaryDivergence,
-                drawSet);
+                drawSet,
+                true,
+                GhostEvidenceErrorCodes.None,
+                string.Empty,
+                environment);
 
             return GhostEvidenceBuildResult.Success(document);
+        }
+
+        /// <summary>
+        /// §15 failure bundle: valid run document with success=false, empty fans,
+        /// null thresholds via writer honesty, no fabricated fan/threshold data.
+        /// </summary>
+        public static GhostEvidenceDocument CreateFailureDocument(
+            EpsilonSearchResult searchResult,
+            GhostSearchIdentity searchIdentity,
+            string errorCode,
+            string errorReason,
+            int ghostBodyLimit = 10,
+            string runId = null,
+            GhostRunEnvironment environment = default)
+        {
+            var resolvedRunId = string.IsNullOrEmpty(runId)
+                ? CreateFailureRunId(searchIdentity, errorCode)
+                : runId;
+
+            return new GhostEvidenceDocument(
+                resolvedRunId,
+                searchResult,
+                searchIdentity,
+                ghostBodyLimit > 0 ? ghostBodyLimit : 10,
+                -1,
+                false,
+                Array.Empty<GhostFanEvidence>(),
+                Array.Empty<GhostRankedBody>(),
+                DivergenceResult.Failure(errorReason ?? string.Empty),
+                GhostDrawSet.Empty,
+                false,
+                string.IsNullOrEmpty(errorCode)
+                    ? GhostEvidenceErrorCodes.SearchFailed
+                    : errorCode,
+                errorReason ?? string.Empty,
+                environment);
+        }
+
+        public static string ResolveSearchErrorCode(string errorReason)
+        {
+            if (!string.IsNullOrEmpty(errorReason) &&
+                errorReason.IndexOf(
+                    EpsilonSearchRunner.CleanupTimeoutErrorMarker,
+                    StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return GhostEvidenceErrorCodes.CleanupTimeout;
+            }
+
+            return GhostEvidenceErrorCodes.SearchFailed;
         }
 
         /// <summary>
@@ -261,6 +394,16 @@ namespace BugCam.Evidence
                    "-body" + identity.TargetBodyId +
                    "-" + AxisName(identity.SearchAxis) +
                    "-" + identity.Strategy;
+        }
+
+        private static string CreateFailureRunId(GhostSearchIdentity identity, string errorCode)
+        {
+            var stamp = DateTime.UtcNow.ToString("yyyyMMddTHHmmssfff", CultureInfo.InvariantCulture);
+            var code = string.IsNullOrEmpty(errorCode) ? "FAILED" : errorCode;
+            return "ghost-fail-" + stamp +
+                   "-body" + identity.TargetBodyId +
+                   "-" + AxisName(identity.SearchAxis) +
+                   "-" + code;
         }
 
         private static Vector3 NormalizeAxis(Vector3 axis)

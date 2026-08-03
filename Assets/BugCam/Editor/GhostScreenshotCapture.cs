@@ -9,6 +9,7 @@ namespace BugCam.Editor
 {
     /// <summary>
     /// Temporary camera + RenderTexture screenshots for ghost evidence visuals.
+    /// Named artifacts use distinct framing/content — never byte-identical copies.
     /// Unavailable when metrics/markers are missing. Always cleans up in finally.
     /// </summary>
     public static class GhostScreenshotCapture
@@ -81,43 +82,71 @@ namespace BugCam.Editor
 
                 if (drawSet.HasBounds)
                 {
-                    PositionCamera(camera, drawSet.WorldBounds.center, drawSet.WorldBounds.size.magnitude);
+                    // Overview: wide framing, baseline + fans + markers.
+                    PositionCamera(
+                        camera,
+                        drawSet.WorldBounds.center,
+                        drawSet.WorldBounds.size.magnitude,
+                        (Vector3.back + Vector3.up * 0.45f + Vector3.right * 0.35f).normalized,
+                        50f);
                     overview = RenderAndSave(
                         camera,
                         rt,
                         Path.Combine(visuals, GhostEvidenceSchema.OverviewPngFileName),
                         drawSet,
                         true,
+                        true,
                         true);
+
+                    // Final: distinct opposite-side framing; markers only (no fan clutter).
+                    PositionCamera(
+                        camera,
+                        drawSet.WorldBounds.center,
+                        drawSet.WorldBounds.size.magnitude * 0.85f,
+                        (Vector3.forward + Vector3.up * 0.65f + Vector3.left * 0.55f).normalized,
+                        40f);
                     final = RenderAndSave(
                         camera,
                         rt,
                         Path.Combine(visuals, GhostEvidenceSchema.FinalPngFileName),
                         drawSet,
                         true,
+                        false,
                         true);
                 }
 
                 if (drawSet.HasFirstDivergence)
                 {
-                    PositionCamera(camera, drawSet.FirstDivergenceWorld, 3f);
+                    PositionCamera(
+                        camera,
+                        drawSet.FirstDivergenceWorld,
+                        2.4f,
+                        (Vector3.back + Vector3.up * 0.2f + Vector3.right * 0.15f).normalized,
+                        45f);
                     first = RenderAndSave(
                         camera,
                         rt,
                         Path.Combine(visuals, GhostEvidenceSchema.FirstDivergencePngFileName),
                         drawSet,
                         true,
+                        true,
                         true);
                 }
 
                 if (drawSet.HasMaxSpread)
                 {
-                    PositionCamera(camera, drawSet.MaxSpreadWorld, 3f);
+                    PositionCamera(
+                        camera,
+                        drawSet.MaxSpreadWorld,
+                        2.1f,
+                        (Vector3.forward + Vector3.up * 0.35f + Vector3.left * 0.25f).normalized,
+                        35f);
                     max = RenderAndSave(
                         camera,
                         rt,
                         Path.Combine(visuals, GhostEvidenceSchema.MaxSpreadPngFileName),
                         drawSet,
+                        false,
                         true,
                         true);
                 }
@@ -143,14 +172,18 @@ namespace BugCam.Editor
             return new CaptureResult(overview, first, max, final, visuals);
         }
 
-        private static void PositionCamera(Camera camera, Vector3 focus, float size)
+        private static void PositionCamera(
+            Camera camera,
+            Vector3 focus,
+            float size,
+            Vector3 direction,
+            float fieldOfView)
         {
             var distance = Mathf.Max(2f, size * 1.4f);
-            var direction = (Vector3.back + Vector3.up * 0.45f + Vector3.right * 0.35f).normalized;
-            camera.transform.position = focus + direction * distance;
+            camera.transform.position = focus + direction.normalized * distance;
             camera.transform.LookAt(focus);
             camera.orthographic = false;
-            camera.fieldOfView = 50f;
+            camera.fieldOfView = fieldOfView;
         }
 
         private static bool RenderAndSave(
@@ -159,9 +192,9 @@ namespace BugCam.Editor
             string path,
             GhostDrawSet drawSet,
             bool showBaseline,
-            bool showFans)
+            bool showFans,
+            bool showMarkers)
         {
-            // Render scene, then composite Handles-equivalent polylines via GL onto the RT.
             camera.Render();
 
             var previous = RenderTexture.active;
@@ -172,7 +205,11 @@ namespace BugCam.Editor
                 GL.LoadProjectionMatrix(camera.projectionMatrix);
                 GL.modelview = camera.worldToCameraMatrix;
                 DrawPolylinesGl(drawSet, showBaseline, showFans);
-                DrawMarkersGl(drawSet);
+                if (showMarkers)
+                {
+                    DrawMarkersGl(drawSet);
+                }
+
                 GL.PopMatrix();
 
                 var tex = new Texture2D(rt.width, rt.height, TextureFormat.RGB24, false);

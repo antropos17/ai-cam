@@ -51,12 +51,34 @@ namespace BugCam.Evidence
                 }
             }
 
-            var candidates = new List<(int bodyId, float error, int index)>(bodyCount);
-            for (var b = 0; b < bodyCount; b++)
+            return Rank(stableBodyIds, maxError, ghostBodyLimit);
+        }
+
+        /// <summary>
+        /// Rank from explicit per-body max errors aligned with <paramref name="bodyIds"/>.
+        /// Omits non-positive / non-finite errors. Deterministic: error desc, bodyId asc.
+        /// </summary>
+        public static GhostRankedBody[] Rank(
+            int[] bodyIds,
+            float[] maxPositionErrorMetres,
+            int ghostBodyLimit)
+        {
+            if (ghostBodyLimit <= 0 ||
+                bodyIds == null ||
+                bodyIds.Length == 0 ||
+                maxPositionErrorMetres == null ||
+                maxPositionErrorMetres.Length != bodyIds.Length)
             {
-                if (maxError[b] > 0f)
+                return Array.Empty<GhostRankedBody>();
+            }
+
+            var candidates = new List<(int bodyId, float error, int index)>(bodyIds.Length);
+            for (var b = 0; b < bodyIds.Length; b++)
+            {
+                var error = maxPositionErrorMetres[b];
+                if (IsFinitePositive(error))
                 {
-                    candidates.Add((stableBodyIds[b], maxError[b], b));
+                    candidates.Add((bodyIds[b], error, b));
                 }
             }
 

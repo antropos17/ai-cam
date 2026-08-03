@@ -27,6 +27,60 @@ namespace BugCam.Evidence
         public EpsilonSearchStrategy Strategy { get; }
     }
 
+    /// <summary>
+    /// §14 identity fields. Empty strings are honest when a value is unavailable.
+    /// </summary>
+    public readonly struct GhostRunEnvironment
+    {
+        public GhostRunEnvironment(
+            string unityVersion,
+            string gitCommitSha,
+            string gitBranch,
+            string scenePath)
+        {
+            UnityVersion = unityVersion ?? string.Empty;
+            GitCommitSha = gitCommitSha ?? string.Empty;
+            GitBranch = gitBranch ?? string.Empty;
+            ScenePath = scenePath ?? string.Empty;
+        }
+
+        public string UnityVersion { get; }
+
+        public string GitCommitSha { get; }
+
+        public string GitBranch { get; }
+
+        public string ScenePath { get; }
+
+        public static GhostRunEnvironment Empty =>
+            new GhostRunEnvironment(string.Empty, string.Empty, string.Empty, string.Empty);
+
+        /// <summary>
+        /// Capture Unity version plus optional git env vars / scene path.
+        /// Empty string when unavailable — never fabricate.
+        /// </summary>
+        public static GhostRunEnvironment Capture(string scenePath = null)
+        {
+            var commit = Environment.GetEnvironmentVariable("BUGCAM_GIT_COMMIT") ?? string.Empty;
+            if (string.IsNullOrEmpty(commit))
+            {
+                commit = Environment.GetEnvironmentVariable("GIT_COMMIT") ?? string.Empty;
+            }
+
+            var branch = Environment.GetEnvironmentVariable("BUGCAM_GIT_BRANCH") ?? string.Empty;
+            if (string.IsNullOrEmpty(branch))
+            {
+                branch = Environment.GetEnvironmentVariable("GIT_BRANCH") ?? string.Empty;
+            }
+
+            return new GhostRunEnvironment(
+                Application.unityVersion ?? string.Empty,
+                commit,
+                branch,
+                scenePath ?? string.Empty);
+        }
+    }
+
     /// <summary>One retained fan run plus its re-analyzed divergence vs baseline.</summary>
     public sealed class GhostFanEvidence
     {
@@ -99,7 +153,11 @@ namespace BugCam.Evidence
             GhostFanEvidence[] fans,
             GhostRankedBody[] rankedBodies,
             DivergenceResult primaryDivergence,
-            GhostDrawSet drawSet)
+            GhostDrawSet drawSet,
+            bool success = true,
+            string errorCode = null,
+            string errorReason = null,
+            GhostRunEnvironment environment = default)
         {
             SchemaVersion = GhostEvidenceSchema.SchemaVersion;
             Kind = GhostEvidenceSchema.Kind;
@@ -114,6 +172,10 @@ namespace BugCam.Evidence
             PrimaryDivergence = primaryDivergence;
             DrawSet = drawSet ?? GhostDrawSet.Empty;
             BuiltUtc = DateTime.UtcNow;
+            Success = success;
+            ErrorCode = errorCode ?? GhostEvidenceErrorCodes.None;
+            ErrorReason = errorReason ?? string.Empty;
+            Environment = environment;
         }
 
         public int SchemaVersion { get; }
@@ -123,6 +185,15 @@ namespace BugCam.Evidence
         public string RunId { get; }
 
         public DateTime BuiltUtc { get; }
+
+        /// <summary>False for failed/cleanup-timeout/build-failure bundles (§15).</summary>
+        public bool Success { get; }
+
+        public string ErrorCode { get; }
+
+        public string ErrorReason { get; }
+
+        public GhostRunEnvironment Environment { get; }
 
         public EpsilonSearchResult SearchResult { get; }
 
@@ -154,6 +225,9 @@ namespace BugCam.Evidence
             Document = document;
         }
 
+        /// <summary>
+        /// True when a writer-ready document was produced (including success=false failure bundles).
+        /// </summary>
         public bool Succeeded { get; }
 
         public string ErrorReason { get; }
