@@ -4,7 +4,7 @@
 
 ## Current position
 - Active block: 1.4 (adaptive epsilon search on `feat/block-1.4-epsilon-search`)
-- Day 1 checkpoint: NOT PASSED (needs Block 1.5 ghost visualization for Scene View fan; 1.4 supplies threshold/fan console numbers)
+- Day 1 checkpoint: NOT PASSED (needs Block 1.5 ghost visualization for Scene View fan; success-path `EpsilonSearchReport` is **not** logged — only cleanup-timeout failures call `Debug.LogError(EpsilonSearchReport.Format(...))`, so 1.4 does **not** supply threshold/fan console numbers on the success path)
 - Day 2 checkpoint: NOT PASSED
 
 ## Completed blocks
@@ -14,7 +14,7 @@
 | 1.1 | TowerScene A/B/A′ determinism probe in both threading modes + Editor restart | See Evidence log 2026-08-02 | squash `91ae29d` (#2) |
 | 1.2 | StateRecorder + RunResult + kinematic transform replay VERIFY | See Evidence log 2026-08-02 (Block 1.2) | squash `a90765a` (#3) |
 | 1.3 | DivergenceSettings + DivergenceEngine synthetic + RunResult integration + review-fix | See Evidence log 2026-08-02 (Block 1.3 review-fix) | squash `6d676ad` (#4) |
-| 1.4 | Adaptive epsilon search (step-driven) + EditMode/PlayMode VERIFY | See Evidence log 2026-08-02 (Block 1.4 verify-fix) | feature `95ef465` (`block-1.4: add adaptive epsilon search`); tip `8346e34` (`block-1.4: harden PlayMode VERIFY and doc tip accuracy`) |
+| 1.4 | Adaptive epsilon search (step-driven) + partial PlayMode VERIFY (fail-closed bracket/fan + ±1 growth-step Ratio≤2; VERIFY (a) OPEN) | See Evidence log 2026-08-02 (Block 1.4 verify-fix) | feature `95ef465`; verify-fix/evidence code `8346e34`; docs honesty amend in this commit |
 
 ## Open findings / blockers
 - RESOLVED (Block 1.4 design): fan samples may exceed `EpsilonCeiling` up to `1.2 × EpsilonCeiling`. Magnitudes are **not** silently clamped; every fan sample above the search ceiling is marked `OutsideSearchRange=true`. Search range and characterization range are reported separately.
@@ -49,16 +49,21 @@ EditMode +13 (`EpsilonSearchTests`). PlayMode +5 (`EpsilonSearchPlayModeTests`).
 | EditMode | 67 | 67 | 0 | Passed | `Library/BugCamEvidence/Block1.4-review-fix/EditMode.xml` |
 | PlayMode | 19 | 19 | 0 | Passed | `Library/BugCamEvidence/Block1.4-review-fix/PlayMode.xml` |
 
-**Verify-fix (merge blockers):** STATUS tip no longer mislabels feature commit as branch HEAD; PLAN `BisectionIterations` default = 7 (prior 6–8 range narrowed); PlayMode `WaitCleanup` captures `initialSceneCount` before search; named VERIFY contracts fail closed on STABLE / non-bracket verdicts. `DefaultStepCount` 250 yields `DIVERGENT AT SEARCH FLOOR` on this tower — measured AscendFromStart X sweep: 31=STABLE, 32–34=`THRESHOLD BRACKET FOUND`, ≥35=floor divergent; VERIFY uses step count **32**. FanMultipliers SO getter / EditMode honesty assert left NON_BLOCKING.
+**Verify-fix (merge blockers):** Commit labels use feature `95ef465` / verify-fix code `8346e34` (not “tip/HEAD” for older SHAs); PLAN `BisectionIterations` default = 7 (prior 6–8 range narrowed); PlayMode `WaitCleanup` captures `initialSceneCount` before search; named VERIFY contracts fail closed on STABLE / non-bracket verdicts. `DefaultStepCount` 250 yields `DIVERGENT AT SEARCH FLOOR` on this tower — measured AscendFromStart X sweep: 31=STABLE, 32–34=`THRESHOLD BRACKET FOUND`, ≥35=floor divergent; VERIFY uses step count **32**. FanMultipliers SO getter / EditMode honesty assert left NON_BLOCKING.
 
-**VERIFIED FACT — batchmode Unity `6000.3.21f1` after verify-fix** (`run-checkpoint.ps1 -Suite All -EvidenceDir Library\BugCamEvidence\Block1.4-verify-fix`, exit 0; SHA `8346e3425e1ab76a0beee9c0111b8ca08eb1dd41`):
+**VERIFIED FACT — batchmode Unity `6000.3.21f1` after verify-fix** (`run-checkpoint.ps1 -Suite All -EvidenceDir Library\BugCamEvidence\Block1.4-verify-fix`, exit 0; verify-fix/evidence code SHA `8346e3425e1ab76a0beee9c0111b8ca08eb1dd41`):
 
 | Suite | total | passed | failed | result | XML |
 |---|---|---|---|---|---|
 | EditMode | 67 | 67 | 0 | Passed | `Library/BugCamEvidence/Block1.4-verify-fix/EditMode.xml` |
 | PlayMode | 19 | 19 | 0 | Passed | `Library/BugCamEvidence/Block1.4-verify-fix/PlayMode.xml` |
 
-**Day 1 hard checkpoint:** NOT PASSED (Block 1.5 ghost visualization still required for Scene View fan).
+**PlayMode VERIFY scope (honest):**
+- **Proven:** fail-closed `THRESHOLD BRACKET FOUND` + fan retention contracts; same-axis strategy convergence within **±1 growth step** (`EpsilonGrowthFactor=2` ⇒ Ratio≤2) at measured `VerifyStepCount=32`.
+- **OPEN/partial — VERIFY (a):** literal PLAN bit-identical identical-config **search** repeat is **not** proven; current test is repeated **baseline-only** within gate ≤1e-6.
+- **Not claimed:** ±1 **bisection-step** agreement (PLAN literal (b) as originally written) — proven scope is ±1 **growth** step only. Adjudicated DOCS_CLAIM_AMENDMENT; do not reopen Core for bit-identical full-search.
+
+**Day 1 hard checkpoint:** NOT PASSED (Block 1.5 ghost visualization still required for Scene View fan; success-path threshold/fan console report not logged).
 
 ### 2026-08-02 — Block 1.3 review-fix (PR #4, `feat/block-1.3-divergence-engine`)
 
@@ -219,6 +224,7 @@ Canonical copies after run 2: `Library/BugCamTestResults.EditMode.xml`, `Library
 **Remaining open questions from that entry:** superseded for Block 1.1 measurement — see 2026-08-02 evidence. Allocation-zero held on this Editor/Mono probe path; broader GC/runtime variants remain untested.
 
 ## Decisions log
+- 2026-08-02 — Block 1.4 docs honesty amend: PlayMode proves fail-closed bracket/fan + same-axis ±1 **growth** step (Ratio≤2) at `VerifyStepCount=32`; VERIFY (a) bit-identical identical-config **search** repeat remains OPEN/partial (baseline-only ≤1e-6 today); ±1 bisection-step agreement not claimed. Success-path `EpsilonSearchReport` is not logged (cleanup-timeout errors only).
 - 2026-08-02 — Block 1.4 VERIFY (b) corrected: algorithm convergence compares different starting strategies on the **same axis, same scene, same target body, same configuration**. X/Y/Z searches are directional characterization; physical thresholds are reported but not required to match. Fan above search ceiling is marked `OutsideSearchRange` (no silent clamp). Search range and characterization range are reported separately.
 - 2026-08-02 — Block 1.2 kinematic VERIFY uses Transform-only replay (`SetLocalPositionAndRotation`), not Rigidbody writeback (PhysX set/get added ~1 ULP). `StateRecorder` stores normalized quaternions. Branch `feat/block-1.2-state-recorder` stacks on `feat/tower-probe-checkpoint` (PR #2); do not auto-merge.
 - 2026-08-02 — Block 1.1 dual-mode TowerScene probe uses separate batchmode Editor processes that patch `m_ThreadingMode` via `PhysicsSettingsProbe.SetThreadingMode`, then run the filtered PlayMode checkpoint test. Never leave Enhanced Determinism on; restore `m_ThreadingMode` to MultiThreaded (`0`) after the experiment. Evidence stays under gitignored `Library/BugCamEvidence/Block1.1/`.
@@ -234,7 +240,7 @@ Canonical copies after run 2: `Library/BugCamTestResults.EditMode.xml`, `Library
 - 2026-07-29 — Core physics rules **inlined into `CLAUDE.md`** as an authoritative section; `.claude/rules/core-physics.md` kept as a copy. Which mechanism the runtime honours: hierarchical `CLAUDE.md` loading is the only one confirmed from inside the session — the session-start context listed the global `~/.claude/CLAUDE.md` and no rules file, and while the session ran from the parent directory the project `CLAUDE.md` was not loaded either. Auto-loading of `.claude/rules/*.md` could not be confirmed, and the frontmatter key differed across projects (`paths:` here, `alwaysApply:`/`globs:` in another). Inlining removes the dependency on that question.
 - 2026-07-29 — Git root = Unity project root = `bugcam/`. All future sessions start with cwd = `X:\AI CAM\nimbalyst-local\bugcam`. Before this, project `.claude/settings.json` was not in effect because the session ran one directory above.
 - 2026-07-29 — Fan size fixed at exactly 15 runs (5 multipliers × 3 axes) + baseline = 16, replacing "10–20 runs".
-- 2026-07-29 — Block 1.4 VERIFY split: identical-config repeat must be bit-identical (a determinism regression test), and three searches from different start brackets must agree within ±1 bisection step. As originally written the check was satisfied trivially by determinism and tested nothing about convergence. A 12-point log-uniform epsilon ladder runs first to expose non-monotonicity as data.
+- 2026-07-29 — Block 1.4 VERIFY split: identical-config repeat must be bit-identical (a determinism regression test), and three searches from different start brackets must agree within ±1 step. As originally written the check was satisfied trivially by determinism and tested nothing about convergence. A 12-point log-uniform epsilon ladder runs first to expose non-monotonicity as data. **2026-08-02 amend:** PlayMode proves ±1 **growth** step (Ratio≤2); ±1 bisection-step remains future/OPEN; VERIFY (a) search-repeat bit-identical remains OPEN/partial (baseline-only ≤1e-6).
 - 2026-07-29 — Architecture tree gained `Tests/`, and a fourth test-only asmdef `BugCam.Tests` is allowed alongside the three production asmdefs.
 - 2026-07-29 — `PLAN.md` Block 2.1 amended: evidence cameras are a deterministic scored post-process (Fibonacci-sphere candidates, fractional 9-ray occlusion, index tie-break, top-25% filter then optimize), replacing "raycast visibility check". Carries a requirement into Block 1.3: `DivergenceSettings` needs `MinEvidenceCoverageScore` alongside `PerBodyPositionThreshold`, so the `EVIDENCE COVERAGE: LOW` verdict has a number behind it.
 - 2026-07-29 — Deferred deliberately: headless test csproj → Block 1.3; `BugCam.Evidence` asmdef → Block 1.5/2.1 (an empty assembly only produces warnings today); `DivergenceSettings` `.asset` authoring → Block 1.3 via `[CreateAssetMenu]` + code defaults; an Editor-side PhysicsScene provider abstraction → contingency, only if the Edit Mode path fails.
