@@ -161,6 +161,69 @@ namespace BugCam.Tests
 
             var hash = Prop<string>(capture, "CaptureHash");
             Assert.That(hash, Has.Length.EqualTo(64), "SHA-256 hex hash expected.");
+            Assert.That(Prop<string[]>(capture, "SleepingBodyWarnings"), Is.Empty,
+                "Awake bodies must emit no sleeping notice.");
+        }
+
+        [Test]
+        public void SleepingBodyEmitsNoticeToCaptureChannelAndManifestButNotVerdict()
+        {
+            CreateDynamicBox("AwakeBody", new Vector3(0f, 1f, 0f));
+            var sleeper = CreateDynamicBox("Sleeper", new Vector3(3f, 1f, 0f));
+            sleeper.GetComponent<Rigidbody>().Sleep();
+            Assert.That(sleeper.GetComponent<Rigidbody>().IsSleeping(), Is.True,
+                "Fixture precondition: Sleep() must stick in the capture scene.");
+
+            var capture = Capture();
+            Assert.That(Prop<bool>(capture, "Succeeded"), Is.True,
+                Prop<string>(capture, "FailureSummary"));
+            // Notice only: the body stays a captured dynamic body.
+            Assert.That(Prop<Array>(capture, "Bodies").Length, Is.EqualTo(2));
+
+            var sleeping = Prop<string[]>(capture, "SleepingBodyWarnings");
+            Assert.That(sleeping, Has.Length.EqualTo(1));
+            Assert.That(sleeping[0], Does.Contain("Sleeper"));
+            Assert.That(sleeping[0], Does.Not.Contain("AwakeBody"));
+            Assert.That(StatusName(RecordFor(capture, "Sleeper")),
+                Is.EqualTo("CapturedDynamic"));
+            Assert.That(Prop<string>(RecordFor(capture, "Sleeper"), "Reason"),
+                Does.Contain("спит"));
+
+            var document = CreateFailureDocumentWithCapture(capture, "sleeping-notice");
+            var tempRoot = Path.Combine(
+                Path.GetTempPath(),
+                "BugCamSceneCaptureTest-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempRoot);
+            try
+            {
+                var writerType = Type.GetType(
+                    "BugCam.Evidence.GhostEvidenceWriter, BugCam.Evidence");
+                var write = writerType.GetMethod(
+                    "Write",
+                    new[] { document.GetType(), typeof(string) }).Invoke(
+                    null,
+                    new object[] { document, tempRoot });
+                Assert.That(Prop<bool>(write, "Succeeded"), Is.True,
+                    Prop<string>(write, "ErrorReason"));
+
+                var manifest = File.ReadAllText(
+                    Path.Combine(Prop<string>(write, "RunDirectory"), "manifest.json"));
+                Assert.That(manifest, Does.Contain("\"sleepingBodyWarnings\":[\""));
+                Assert.That(manifest, Does.Contain("Sleeper"));
+
+                // Adjudication: the notice never reaches the verdict channel — the
+                // console report keeps only the kinematic-freeze lines.
+                var reportType = Type.GetType(
+                    "BugCam.Evidence.GhostEvidenceReport, BugCam.Evidence");
+                var report = (string)reportType.GetMethod("Format")
+                    .Invoke(null, new object[] { document });
+                Assert.That(report, Does.Not.Contain("sleepingBodyWarning"));
+                Assert.That(report, Does.Not.Contain("Sleeper"));
+            }
+            finally
+            {
+                Directory.Delete(tempRoot, true);
+            }
         }
 
         [Test]

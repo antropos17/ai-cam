@@ -1470,6 +1470,12 @@ namespace BugCam.Editor
                 rows.Add("⚠ " + _sceneCapture.KinematicFreezeWarnings[i]);
             }
 
+            // Sleeping-body notice: capture report + manifest only, never the verdict.
+            for (var i = 0; i < _sceneCapture.SleepingBodyWarnings.Length; i++)
+            {
+                rows.Add("⚠ " + _sceneCapture.SleepingBodyWarnings[i]);
+            }
+
             for (var i = 0; i < _sceneCapture.Objects.Length; i++)
             {
                 var record = _sceneCapture.Objects[i];

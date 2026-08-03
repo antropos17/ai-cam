@@ -92,6 +92,7 @@ namespace BugCam.Core
             SimulationStaticColliderDefinition[] staticColliders,
             SceneCaptureObjectRecord[] objects,
             string[] kinematicFreezeWarnings,
+            string[] sleepingBodyWarnings,
             string captureHash)
         {
             Performed = true;
@@ -102,6 +103,7 @@ namespace BugCam.Core
             StaticColliders = staticColliders ?? EmptyStatics;
             Objects = objects ?? EmptyRecords;
             KinematicFreezeWarnings = kinematicFreezeWarnings ?? EmptyWarnings;
+            SleepingBodyWarnings = sleepingBodyWarnings ?? EmptyWarnings;
             CaptureHash = captureHash ?? string.Empty;
         }
 
@@ -134,6 +136,13 @@ namespace BugCam.Core
         /// </summary>
         public string[] KinematicFreezeWarnings { get; }
 
+        /// <summary>
+        /// Adjudicated A2 follow-up (2026-08-03): bodies asleep at capture time start
+        /// awake in the simulation — notice only, to the capture report and the manifest;
+        /// never the verdict (the body stays dynamic, unlike the kinematic freeze).
+        /// </summary>
+        public string[] SleepingBodyWarnings { get; }
+
         /// <summary>SHA-256 (hex) over the canonical capture serialization.</summary>
         public string CaptureHash { get; }
 
@@ -143,6 +152,7 @@ namespace BugCam.Core
             SimulationStaticColliderDefinition[] staticColliders,
             SceneCaptureObjectRecord[] objects,
             string[] kinematicFreezeWarnings,
+            string[] sleepingBodyWarnings,
             string captureHash)
         {
             return new SceneCaptureResult(
@@ -153,6 +163,7 @@ namespace BugCam.Core
                 staticColliders,
                 objects,
                 kinematicFreezeWarnings,
+                sleepingBodyWarnings,
                 captureHash);
         }
 
@@ -169,6 +180,7 @@ namespace BugCam.Core
                 EmptyBodies,
                 EmptyStatics,
                 objects,
+                EmptyWarnings,
                 EmptyWarnings,
                 captureHash);
         }
@@ -240,6 +252,7 @@ namespace BugCam.Core
             var statics = new List<StaticCandidate>();
             var records = new List<RecordCandidate>();
             var warnings = new List<string>();
+            var sleepingWarnings = new List<string>();
 
             var roots = scene.GetRootGameObjects();
             for (var i = 0; i < roots.Length; i++)
@@ -251,7 +264,8 @@ namespace BugCam.Core
                     dynamics,
                     statics,
                     records,
-                    warnings);
+                    warnings,
+                    sleepingWarnings);
             }
 
             // Deterministic order for everything downstream: sort by the identity key.
@@ -259,6 +273,7 @@ namespace BugCam.Core
             statics.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
             records.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
             warnings.Sort(string.CompareOrdinal);
+            sleepingWarnings.Sort(string.CompareOrdinal);
 
             var stableIdByKey = new Dictionary<string, int>(dynamics.Count);
             for (var i = 0; i < dynamics.Count; i++)
@@ -338,6 +353,7 @@ namespace BugCam.Core
                 staticDefinitions,
                 objectRecords,
                 warnings.ToArray(),
+                sleepingWarnings.ToArray(),
                 hash);
         }
 
@@ -348,9 +364,11 @@ namespace BugCam.Core
             List<DynamicCandidate> dynamics,
             List<StaticCandidate> statics,
             List<RecordCandidate> records,
-            List<string> warnings)
+            List<string> warnings,
+            List<string> sleepingWarnings)
         {
-            ClassifyObject(transform, key, path, dynamics, statics, records, warnings);
+            ClassifyObject(
+                transform, key, path, dynamics, statics, records, warnings, sleepingWarnings);
 
             for (var i = 0; i < transform.childCount; i++)
             {
@@ -362,7 +380,8 @@ namespace BugCam.Core
                     dynamics,
                     statics,
                     records,
-                    warnings);
+                    warnings,
+                    sleepingWarnings);
             }
         }
 
@@ -379,7 +398,8 @@ namespace BugCam.Core
             List<DynamicCandidate> dynamics,
             List<StaticCandidate> statics,
             List<RecordCandidate> records,
-            List<string> warnings)
+            List<string> warnings,
+            List<string> sleepingWarnings)
         {
             var gameObject = transform.gameObject;
             var rigidbody = gameObject.GetComponent<Rigidbody>();
@@ -420,7 +440,8 @@ namespace BugCam.Core
             }
 
             ClassifyRigidbodyObject(
-                transform, key, path, rigidbody, colliders, dynamics, statics, records, warnings);
+                transform, key, path, rigidbody, colliders, dynamics, statics, records,
+                warnings, sleepingWarnings);
         }
 
         private static void ClassifyStaticObject(
@@ -486,7 +507,8 @@ namespace BugCam.Core
             List<DynamicCandidate> dynamics,
             List<StaticCandidate> statics,
             List<RecordCandidate> records,
-            List<string> warnings)
+            List<string> warnings,
+            List<string> sleepingWarnings)
         {
             Collider contactCollider = null;
             var contactColliderCount = 0;
@@ -551,6 +573,17 @@ namespace BugCam.Core
                 return;
             }
 
+            // Adjudicated notice (2026-08-03): a body asleep at capture time starts awake
+            // in the simulation — the captured scene can behave differently from the live
+            // one. Notice only: the body stays dynamic and the verdict is untouched.
+            var isSleeping = rigidbody.IsSleeping();
+            if (isSleeping)
+            {
+                sleepingWarnings.Add(
+                    "тело «" + path + "» спит на момент захвата — в симуляции оно " +
+                    "стартует бодрствующим; поведение может отличаться от живой сцены");
+            }
+
             dynamics.Add(new DynamicCandidate
             {
                 Path = path,
@@ -562,7 +595,14 @@ namespace BugCam.Core
                 InitialLinearVelocity = rigidbody.linearVelocity,
                 Shape = shape
             });
-            AddRecord(records, path, key, SceneCaptureObjectStatus.CapturedDynamic, string.Empty);
+            AddRecord(
+                records,
+                path,
+                key,
+                SceneCaptureObjectStatus.CapturedDynamic,
+                isSleeping
+                    ? "спит на момент захвата (см. предупреждение)"
+                    : string.Empty);
         }
 
         /// <summary>

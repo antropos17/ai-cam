@@ -991,6 +991,21 @@ namespace BugCam.Evidence
 
             sb.Append(']');
 
+            // Adjudicated notice channel (2026-08-03): manifest + capture report only —
+            // never the verdict, unlike the kinematic freeze.
+            sb.Append(",\"sleepingBodyWarnings\":[");
+            for (var i = 0; i < capture.SleepingBodyWarnings.Length; i++)
+            {
+                if (i > 0)
+                {
+                    sb.Append(',');
+                }
+
+                sb.Append('"').Append(Escape(capture.SleepingBodyWarnings[i])).Append('"');
+            }
+
+            sb.Append(']');
+
             sb.Append(",\"bodyMap\":[");
             var firstBody = true;
             for (var i = 0; i < capture.Objects.Length; i++)
