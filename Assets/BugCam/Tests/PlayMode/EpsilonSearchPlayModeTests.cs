@@ -15,6 +15,13 @@ namespace BugCam.Tests
     {
         private const int FastStepCount = 40;
 
+        // Measured on TowerScene (batchmode 6000.3.21f1): DefaultStepCount 250 yields
+        // DIVERGENT AT SEARCH FLOOR (not STABLE). AscendFromStart X sweep:
+        // 31=STABLE, 32–34=THRESHOLD BRACKET FOUND, ≥35=DIVERGENT AT SEARCH FLOOR.
+        // 32 is the smallest proven bracket-producing step count (evidence:
+        // Library/BugCamEvidence/Block1.4-verify-fix/step-sweep*.txt).
+        private const int VerifyStepCount = 32;
+
         [UnityTest]
         public IEnumerator RunnerExecutesHarnessWithSceneCleanupBetweenProbes()
         {
@@ -94,48 +101,51 @@ namespace BugCam.Tests
                 Vector3.right,
                 StrategyAscendFromStart(),
                 0f,
-                FastStepCount,
+                VerifyStepCount,
                 r => fromStart = r);
 
             yield return RunSearch(
                 Vector3.right,
                 StrategyAscendFromCustom(),
                 2e-5f,
-                FastStepCount,
+                VerifyStepCount,
                 r => fromCustom = r);
 
             yield return RunSearch(
                 Vector3.right,
                 StrategyDescendFromCeiling(),
                 0f,
-                FastStepCount,
+                VerifyStepCount,
                 r => fromCeiling = r);
 
             Assert.That(Prop<bool>(fromStart, "Succeeded"), Is.True, Prop<string>(fromStart, "ErrorReason"));
             Assert.That(Prop<bool>(fromCustom, "Succeeded"), Is.True, Prop<string>(fromCustom, "ErrorReason"));
             Assert.That(Prop<bool>(fromCeiling, "Succeeded"), Is.True, Prop<string>(fromCeiling, "ErrorReason"));
 
+            Assert.That(
+                Prop<string>(fromStart, "Verdict"),
+                Is.EqualTo("THRESHOLD BRACKET FOUND"),
+                "Unexpected STABLE or non-bracket verdict for from-start: " + Prop<string>(fromStart, "Verdict"));
+            Assert.That(
+                Prop<string>(fromCustom, "Verdict"),
+                Is.EqualTo("THRESHOLD BRACKET FOUND"),
+                "Unexpected STABLE or non-bracket verdict for from-custom: " + Prop<string>(fromCustom, "Verdict"));
+            Assert.That(
+                Prop<string>(fromCeiling, "Verdict"),
+                Is.EqualTo("THRESHOLD BRACKET FOUND"),
+                "Unexpected STABLE or non-bracket verdict for from-ceiling: " + Prop<string>(fromCeiling, "Verdict"));
+
+            Assert.That(Prop<bool>(fromStart, "HasThresholdEstimate"), Is.True);
+            Assert.That(Prop<bool>(fromCustom, "HasThresholdEstimate"), Is.True);
+            Assert.That(Prop<bool>(fromCeiling, "HasThresholdEstimate"), Is.True);
+
             // Directional X/Y/Z thresholds are not required to match; same-axis strategies must.
-            if (Prop<bool>(fromStart, "HasThresholdEstimate") &&
-                Prop<bool>(fromCustom, "HasThresholdEstimate") &&
-                Prop<bool>(fromCeiling, "HasThresholdEstimate"))
-            {
-                var a = Prop<float>(fromStart, "ThresholdEstimateMetres");
-                var b = Prop<float>(fromCustom, "ThresholdEstimateMetres");
-                var c = Prop<float>(fromCeiling, "ThresholdEstimateMetres");
-                Assert.That(Ratio(a, b), Is.LessThanOrEqualTo(2.0001f));
-                Assert.That(Ratio(a, c), Is.LessThanOrEqualTo(2.0001f));
-                Assert.That(Ratio(b, c), Is.LessThanOrEqualTo(2.0001f));
-            }
-            else
-            {
-                Assert.That(
-                    Prop<string>(fromStart, "Verdict"),
-                    Is.EqualTo(Prop<string>(fromCustom, "Verdict")));
-                Assert.That(
-                    Prop<string>(fromStart, "Verdict"),
-                    Is.EqualTo(Prop<string>(fromCeiling, "Verdict")));
-            }
+            var a = Prop<float>(fromStart, "ThresholdEstimateMetres");
+            var b = Prop<float>(fromCustom, "ThresholdEstimateMetres");
+            var c = Prop<float>(fromCeiling, "ThresholdEstimateMetres");
+            Assert.That(Ratio(a, b), Is.LessThanOrEqualTo(2.0001f));
+            Assert.That(Ratio(a, c), Is.LessThanOrEqualTo(2.0001f));
+            Assert.That(Ratio(b, c), Is.LessThanOrEqualTo(2.0001f));
         }
 
         [UnityTest]
@@ -147,27 +157,22 @@ namespace BugCam.Tests
             object y = null;
             object z = null;
 
-            yield return RunSearch(Vector3.right, StrategyAscendFromStart(), 0f, FastStepCount, r => x = r);
-            yield return RunSearch(Vector3.up, StrategyAscendFromStart(), 0f, FastStepCount, r => y = r);
-            yield return RunSearch(Vector3.forward, StrategyAscendFromStart(), 0f, FastStepCount, r => z = r);
+            yield return RunSearch(Vector3.right, StrategyAscendFromStart(), 0f, VerifyStepCount, r => x = r);
+            yield return RunSearch(Vector3.up, StrategyAscendFromStart(), 0f, VerifyStepCount, r => y = r);
+            yield return RunSearch(Vector3.forward, StrategyAscendFromStart(), 0f, VerifyStepCount, r => z = r);
 
             foreach (var result in new[] { x, y, z })
             {
                 Assert.That(Prop<bool>(result, "Succeeded"), Is.True, Prop<string>(result, "ErrorReason"));
                 var verdict = Prop<string>(result, "Verdict");
                 Assert.That(
-                    verdict == "STABLE WITHIN TESTED RANGE" ||
-                    verdict == "NON-MONOTONIC WITHIN TESTED RANGE" ||
-                    verdict == "THRESHOLD BRACKET FOUND" ||
-                    verdict == "DIVERGENT AT SEARCH FLOOR",
-                    "Unexpected verdict: " + verdict);
-
-                if (verdict != "STABLE WITHIN TESTED RANGE")
-                {
-                    Assert.That(Arr(result, "FanRuns").Length, Is.EqualTo(15));
-                    Assert.That(Arr(result, "FanSummaries").Length, Is.EqualTo(15));
-                    Assert.That(Prop<bool>(Prop<object>(result, "BaselineRun"), "Succeeded"), Is.True);
-                }
+                    verdict,
+                    Is.EqualTo("THRESHOLD BRACKET FOUND"),
+                    "Unexpected STABLE or non-bracket verdict: " + verdict);
+                Assert.That(Prop<bool>(result, "HasThresholdEstimate"), Is.True);
+                Assert.That(Arr(result, "FanRuns").Length, Is.EqualTo(15));
+                Assert.That(Arr(result, "FanSummaries").Length, Is.EqualTo(15));
+                Assert.That(Prop<bool>(Prop<object>(result, "BaselineRun"), "Succeeded"), Is.True);
             }
         }
 
@@ -181,20 +186,20 @@ namespace BugCam.Tests
                 Vector3.right,
                 StrategyAscendFromStart(),
                 0f,
-                FastStepCount,
+                VerifyStepCount,
                 r => completed = r);
 
             Assert.That(Prop<bool>(completed, "Succeeded"), Is.True, Prop<string>(completed, "ErrorReason"));
             Assert.That(Prop<bool>(Prop<object>(completed, "BaselineRun"), "Succeeded"), Is.True);
 
             var verdict = Prop<string>(completed, "Verdict");
-            if (verdict == "STABLE WITHIN TESTED RANGE")
-            {
-                Assert.That(Arr(completed, "FanRuns"), Is.Empty);
-                Assert.Pass("Scene stable in range — no fan retained, as required.");
-            }
-
+            Assert.That(
+                verdict,
+                Is.EqualTo("THRESHOLD BRACKET FOUND"),
+                "Unexpected STABLE or non-bracket verdict: " + verdict);
+            Assert.That(Prop<bool>(completed, "HasThresholdEstimate"), Is.True);
             Assert.That(Arr(completed, "FanRuns").Length, Is.EqualTo(15));
+            Assert.That(Arr(completed, "FanSummaries").Length, Is.EqualTo(15));
             Assert.That(Arr(completed, "LadderSummaries").Length, Is.EqualTo(12));
         }
 
@@ -250,6 +255,7 @@ namespace BugCam.Tests
                 new System.Text.RegularExpressions.Regex(
                     "BUGCAM_BLOCK_1_4_EPSILON_SEARCH[\\s\\S]*succeeded=False[\\s\\S]*Temporary scene cleanup timed out"));
 
+            var initialSceneCount = SceneManager.sceneCount;
             object completed = null;
             yield return RunSearch(
                 Vector3.right,
@@ -260,7 +266,8 @@ namespace BugCam.Tests
                 alwaysFailCleanup: true);
 
             Assert.That(Prop<bool>(completed, "Succeeded"), Is.False);
-            yield return WaitCleanup(SceneManager.sceneCount);
+            yield return WaitCleanup(initialSceneCount);
+            Assert.That(SceneManager.sceneCount, Is.EqualTo(initialSceneCount));
         }
 
         [UnityTest]

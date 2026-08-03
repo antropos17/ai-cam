@@ -14,7 +14,7 @@
 | 1.1 | TowerScene A/B/A′ determinism probe in both threading modes + Editor restart | See Evidence log 2026-08-02 | squash `91ae29d` (#2) |
 | 1.2 | StateRecorder + RunResult + kinematic transform replay VERIFY | See Evidence log 2026-08-02 (Block 1.2) | squash `a90765a` (#3) |
 | 1.3 | DivergenceSettings + DivergenceEngine synthetic + RunResult integration + review-fix | See Evidence log 2026-08-02 (Block 1.3 review-fix) | squash `6d676ad` (#4) |
-| 1.4 | Adaptive epsilon search (step-driven) + EditMode/PlayMode VERIFY | See Evidence log 2026-08-02 (Block 1.4) | `block-1.4: add adaptive epsilon search` (branch HEAD) |
+| 1.4 | Adaptive epsilon search (step-driven) + EditMode/PlayMode VERIFY | See Evidence log 2026-08-02 (Block 1.4 verify-fix) | feature `95ef465` (`block-1.4: add adaptive epsilon search`); tip `block-1.4: harden PlayMode VERIFY and doc tip accuracy` |
 
 ## Open findings / blockers
 - RESOLVED (Block 1.4 design): fan samples may exceed `EpsilonCeiling` up to `1.2 × EpsilonCeiling`. Magnitudes are **not** silently clamped; every fan sample above the search ceiling is marked `OutsideSearchRange=true`. Search range and characterization range are reported separately.
@@ -48,6 +48,15 @@ EditMode +13 (`EpsilonSearchTests`). PlayMode +5 (`EpsilonSearchPlayModeTests`).
 |---|---|---|---|---|---|
 | EditMode | 67 | 67 | 0 | Passed | `Library/BugCamEvidence/Block1.4-review-fix/EditMode.xml` |
 | PlayMode | 19 | 19 | 0 | Passed | `Library/BugCamEvidence/Block1.4-review-fix/PlayMode.xml` |
+
+**Verify-fix (merge blockers):** STATUS tip no longer mislabels feature commit as branch HEAD; PLAN `BisectionIterations` default = 7 (prior 6–8 range narrowed); PlayMode `WaitCleanup` captures `initialSceneCount` before search; named VERIFY contracts fail closed on STABLE / non-bracket verdicts. `DefaultStepCount` 250 yields `DIVERGENT AT SEARCH FLOOR` on this tower — measured AscendFromStart X sweep: 31=STABLE, 32–34=`THRESHOLD BRACKET FOUND`, ≥35=floor divergent; VERIFY uses step count **32**. FanMultipliers SO getter / EditMode honesty assert left NON_BLOCKING.
+
+**VERIFIED FACT — batchmode Unity `6000.3.21f1`** (`run-checkpoint.ps1 -Suite All -EvidenceDir Library\BugCamEvidence\Block1.4-verify-fix`, exit 0):
+
+| Suite | total | passed | failed | result | XML |
+|---|---|---|---|---|---|
+| EditMode | 67 | 67 | 0 | Passed | `Library/BugCamEvidence/Block1.4-verify-fix/EditMode.xml` |
+| PlayMode | 19 | 19 | 0 | Passed | `Library/BugCamEvidence/Block1.4-verify-fix/PlayMode.xml` |
 
 **Day 1 hard checkpoint:** NOT PASSED (Block 1.5 ghost visualization still required for Scene View fan).
 

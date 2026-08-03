@@ -43,7 +43,7 @@ Epsilon search (Block 1.4) — same asset, per `CLAUDE.md` "all thresholds live 
 | `EpsilonStart` = 1e-5 | metres | first magnitude of the exponential search (0.01 mm) |
 | `EpsilonGrowthFactor` = 2 | — | multiplier per exponential step |
 | `EpsilonCeiling` = 1e-2 | metres | upper bound of the tested range (10 mm); above it the verdict is `STABLE WITHIN TESTED RANGE` |
-| `BisectionIterations` | steps | binary-search depth; the single default is fixed in Block 1.4 (range 6–8 was never narrowed) |
+| `BisectionIterations` = 7 | steps | binary-search depth; Block 1.4 fixed the prior 6–8 range to this single default |
 | `LadderPointCount` = 12 | points | log-uniform monotonicity ladder run before bisection is trusted |
 | `FanMultipliers` = {0.8, 0.9, 1.0, 1.1, 1.2} | × threshold | fan spread; 5 multipliers × 3 axes = 15 runs + baseline |
 
