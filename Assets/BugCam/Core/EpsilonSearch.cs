@@ -149,6 +149,69 @@ namespace BugCam.Core
 
         public EpsilonSearchPhase Phase => _phase;
 
+        /// <summary>
+        /// 1-based number of the probe in flight (or about to be issued) within the current
+        /// phase. Progress reporting only: mirrors the existing private per-phase counters
+        /// and never participates in search control flow. 0 outside active probe phases.
+        /// </summary>
+        public int CurrentPhaseStep
+        {
+            get
+            {
+                switch (_phase)
+                {
+                    case EpsilonSearchPhase.Baseline:
+                        return 1;
+                    case EpsilonSearchPhase.Ladder:
+                        return _ladderIndex + 1;
+                    case EpsilonSearchPhase.Exponential:
+                        return _exponential.Count + 1;
+                    case EpsilonSearchPhase.Bisection:
+                        return _bisectionIndex + 1;
+                    case EpsilonSearchPhase.Fan:
+                        return _fanIndex + 1;
+                    default:
+                        return 0;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Total probes in the current phase, or -1 when the phase has no predetermined
+        /// total (Exponential advances until the strategy flips the bracket, so its length
+        /// is honestly unknown up front). 0 outside active probe phases.
+        /// </summary>
+        public int PhaseStepTotal
+        {
+            get
+            {
+                switch (_phase)
+                {
+                    case EpsilonSearchPhase.Baseline:
+                        return 1;
+                    case EpsilonSearchPhase.Ladder:
+                        return _ladderEpsilons != null ? _ladderEpsilons.Length : 0;
+                    case EpsilonSearchPhase.Exponential:
+                        return -1;
+                    case EpsilonSearchPhase.Bisection:
+                        return _settings.BisectionIterations;
+                    case EpsilonSearchPhase.Fan:
+                        return _fanEpsilons != null ? _fanEpsilons.Length : 0;
+                    default:
+                        return 0;
+                }
+            }
+        }
+
+        /// <summary>True while a probe request is issued and not yet submitted back.</summary>
+        public bool HasOutstandingProbe => _hasOutstanding;
+
+        /// <summary>
+        /// Epsilon (metres) of the outstanding probe. 0 when no probe is outstanding or the
+        /// outstanding probe is the baseline (epsilon 0 by definition).
+        /// </summary>
+        public float CurrentEpsilonMetres => _hasOutstanding ? _outstanding.EpsilonMetres : 0f;
+
         public bool TryGetNextProbe(out EpsilonProbeRequest request)
         {
             request = default;
