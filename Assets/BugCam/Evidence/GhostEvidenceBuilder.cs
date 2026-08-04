@@ -415,6 +415,17 @@ namespace BugCam.Evidence
                 return GhostEvidenceErrorCodes.CleanupTimeout;
             }
 
+            // 2.2.2: the harness prefixes simulation-point mesh resolve failures with
+            // this code so the capsule distinguishes a broken evidence capsule (asset
+            // changed/vanished after capture) from an ordinary search failure.
+            if (!string.IsNullOrEmpty(errorReason) &&
+                errorReason.IndexOf(
+                    SceneMeshResolve.SimulationResolveFailedCode,
+                    StringComparison.Ordinal) >= 0)
+            {
+                return GhostEvidenceErrorCodes.MeshResolveFailed;
+            }
+
             return GhostEvidenceErrorCodes.SearchFailed;
         }
 

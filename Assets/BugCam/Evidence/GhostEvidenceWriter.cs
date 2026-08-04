@@ -1055,6 +1055,22 @@ namespace BugCam.Evidence
                 }
 
                 WriteString(sb, "reason", record.Reason);
+                // 2.2.2 ratified additive field: present ONLY for mesh-shaped objects
+                // (never null-ed) — tower/domino manifests stay byte-unchanged.
+                if (record.HasMeshReference)
+                {
+                    var meshReference = record.MeshReference;
+                    sb.Append(",\"meshRef\":{");
+                    WriteString(sb, "assetGuid", meshReference.AssetGuid, true);
+                    sb.Append(",\"localFileId\":").Append(
+                        meshReference.LocalFileId.ToString(
+                            System.Globalization.CultureInfo.InvariantCulture));
+                    WriteString(sb, "meshName", meshReference.MeshName);
+                    WriteString(sb, "contentHash", meshReference.ContentHash);
+                    WriteBool(sb, "convex", meshReference.Convex);
+                    sb.Append('}');
+                }
+
                 sb.Append('}');
             }
 

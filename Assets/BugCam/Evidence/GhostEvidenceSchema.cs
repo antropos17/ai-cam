@@ -108,5 +108,14 @@ namespace BugCam.Evidence
         /// per-object reasons in the sceneCapture manifest section) — no simulation ran.
         /// </summary>
         public const string SceneCaptureFailed = "SCENE_CAPTURE_FAILED";
+
+        /// <summary>
+        /// Block 2.2.2 (адъюдикация №5): mesh resolve failed at the simulation point —
+        /// distinct from SCENE_CAPTURE_FAILED because the asset changed or vanished
+        /// AFTER capture, i.e. the evidence capsule is broken. Also raised when a run
+        /// reaches simulation without the edit-mode capture point (Amendment 2026-08-04
+        /// run-path invariant).
+        /// </summary>
+        public const string MeshResolveFailed = "SCENE_MESH_RESOLVE_FAILED";
     }
 }
