@@ -1485,6 +1485,41 @@ namespace BugCam.Editor
                 }
             }
 
+            // 2.2.2: mesh-reference rows — the capture report names every captured mesh
+            // with its asset identity and geometry-hash prefix (full values in manifest).
+            var meshShown = 0;
+            var meshTotal = 0;
+            for (var i = 0; i < _sceneCapture.Objects.Length; i++)
+            {
+                var record = _sceneCapture.Objects[i];
+                if (!record.HasMeshReference)
+                {
+                    continue;
+                }
+
+                meshTotal++;
+                if (meshShown < 8)
+                {
+                    var reference = record.MeshReference;
+                    var hashPrefix = reference.ContentHash.Length >= 12
+                        ? reference.ContentHash.Substring(0, 12) + "…"
+                        : reference.ContentHash;
+                    rows.Add("◆ меш «" + record.HierarchyPath + "»: " +
+                             reference.MeshName + " (" +
+                             (reference.Convex ? "convex" : "non-convex") + ") " +
+                             reference.AssetGuid + "/" +
+                             reference.LocalFileId.ToString(CultureInfo.InvariantCulture) +
+                             "  hash " + hashPrefix);
+                    meshShown++;
+                }
+            }
+
+            if (meshTotal > meshShown)
+            {
+                rows.Add("◆ … ещё " + (meshTotal - meshShown) +
+                         " меш-ссылок — полный список в manifest прогона");
+            }
+
             var otherShown = 0;
             var otherTotal = 0;
             for (var i = 0; i < _sceneCapture.Objects.Length; i++)

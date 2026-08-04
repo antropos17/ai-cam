@@ -103,6 +103,24 @@ namespace BugCam.Editor
             SessionState.SetBool(BusyKey, true);
             SessionState.SetString(SourceKey, source ?? SourceMenu);
 
+            // Amendment 2026-08-04 run-path invariant (docs/CONTRACT-2.2.2.md П.6): the
+            // authoritative capture — geometry reads + full contentHash — happens HERE,
+            // in edit mode, before Play Mode entry; the runner consumes the handed-over
+            // result and never re-captures in Play Mode (geometry is unreadable there).
+            // A scene-kind run that reaches the runner without this handover fails
+            // closed with SCENE_MESH_RESOLVE_FAILED.
+            if (entry.SceneKind == GhostSearchSceneKind.CapturedScene &&
+                !EditorApplication.isPlaying)
+            {
+                SceneCaptureHandover.Store(
+                    SceneCapture.Capture(
+                        UnityEngine.SceneManagement.SceneManager.GetActiveScene()));
+            }
+            else
+            {
+                SceneCaptureHandover.Clear();
+            }
+
             if (!EditorApplication.isPlaying)
             {
                 SessionState.SetBool(PendingKey, true);
@@ -426,13 +444,16 @@ namespace BugCam.Editor
                     resolution.EffectiveFloorMetres,
                     resolution.EffectiveCeilingMetres);
 
-                // A2: capture the open scene once, before any simulation — this capture is
-                // authoritative for the run and its manifest. Tower runs never capture.
+                // A2 + Amendment 2026-08-04: the authoritative capture happened in edit
+                // mode before Play Mode entry (StartTowerSearch) and is consumed here via
+                // the handover — the runner never re-captures in Play Mode. Tower runs
+                // never capture.
                 var sceneCapture = default(SceneCaptureResult);
-                if (entry.SceneKind == GhostSearchSceneKind.CapturedScene)
+                var sceneCaptureHandoverMissing = false;
+                if (entry.SceneKind == GhostSearchSceneKind.CapturedScene &&
+                    !SceneCaptureHandover.TryRead(out sceneCapture))
                 {
-                    sceneCapture = SceneCapture.Capture(
-                        UnityEngine.SceneManagement.SceneManager.GetActiveScene());
+                    sceneCaptureHandoverMissing = true;
                 }
 
                 GhostEvidenceDocument document;
@@ -450,6 +471,28 @@ namespace BugCam.Editor
                         GhostEvidenceErrorCodes.SettingsResolveFailed,
                         resolveFailReason,
                         DivergenceSettings.DefaultGhostBodyLimit,
+                        null,
+                        environment,
+                        provenance,
+                        sceneCapture);
+                }
+                else if (entry.SceneKind == GhostSearchSceneKind.CapturedScene &&
+                         sceneCaptureHandoverMissing)
+                {
+                    // Ratified run-path invariant (Amendment 2026-08-04 П.6): no
+                    // simulation without the edit-mode capture point — the run does NOT
+                    // proceed on the structural check alone.
+                    var invariantReason =
+                        "запуск раннера без предшествующего edit-mode-захвата — " +
+                        "симуляция без захватной точки запрещена (инвариант Поправки " +
+                        "2026-08-04, docs/CONTRACT-2.2.2.md)";
+                    Debug.LogError("BugCam: " + invariantReason);
+                    document = GhostEvidenceBuilder.CreateFailureDocument(
+                        searchResult,
+                        identity,
+                        GhostEvidenceErrorCodes.MeshResolveFailed,
+                        invariantReason,
+                        settings.GhostBodyLimit,
                         null,
                         environment,
                         provenance,
