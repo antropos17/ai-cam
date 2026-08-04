@@ -177,7 +177,7 @@ Full cycle "press button → get MP4" with zero manual editing + published video
 ## DAY 3 — Buffer (strict priority order)
 1. Stabilization: run untouched core on a second scene (dominoes / Rube Goldberg).
 2. `.bugcam` export v0: one JSON + trajectory binary + preview PNG. No viewer.
-3. UPM packaging: package.json, README with honest caveats (sensitivity ≠ bug; environment-scoped repeatability; solver effects exist).
+3. UPM packaging: package.json, README with honest caveats — **AMENDED 2026-08-04 (PR #12): this entry governs a customer-facing artifact, so its caveats must never be weaker than `docs/SPEC.md` §14; the previous "environment-scoped repeatability" wording was.** Required in the shipped README: sensitivity ≠ bug; **BugCam does not claim cross-platform repeatability — PhysX bit-identical results are a within-platform and within-version claim only, and divergence across CPU vendors (Intel versus AMD) or from GPU operation ordering is expected rather than a defect**; **raw `Physics.ComputePenetration` output is not trusted without sanitization** (documented defect class: absurd depth such as 743.8444 on a shallow overlap, or a `false` return at small depth — see `docs/RESEARCH-2026-08-04-placement.md` and the blocking measurement in Block 3.0, probe 2); solver effects exist. Wording is taken from `SPEC.md` §14, which stays canonical — if the two ever diverge again, §14 wins and this entry is the one to fix.
 4. Second short video (Butterfly Test #002).
 
 ---
