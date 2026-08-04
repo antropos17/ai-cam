@@ -1,3 +1,7 @@
+---
+description: Execute a task under standing evidence-audit, STOP-condition and scope rules
+---
+
 # Adjudicate
 
 $ARGUMENTS is the task. Execute it under the standing rules below; the rules apply to the whole run, not only to the final message.

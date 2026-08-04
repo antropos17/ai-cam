@@ -1,3 +1,7 @@
+---
+description: Six-thinking-modes analysis of a product or business decision, ending in one verdict
+---
+
 # Sixhats
 
 $ARGUMENTS is the decision to analyse. This command covers product and business decisions only: positioning, pricing, demo composition, landing, marketing. If $ARGUMENTS is an engineering decision governed by a ratified contract, say so and stop — do not run the modes.

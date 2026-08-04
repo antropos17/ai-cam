@@ -1,3 +1,7 @@
+---
+description: Check a draft agent prompt against the prompt rules and return a corrected version plus violations
+---
+
 # Promptcheck
 
 $ARGUMENTS is a draft prompt for a Claude Code agent. Check it against the rules below and return two things: the corrected version of the prompt, and the list of violations you found in the draft.

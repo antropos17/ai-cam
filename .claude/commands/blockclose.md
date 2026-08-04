@@ -1,3 +1,7 @@
+---
+description: Verify the block-close checklist with shown evidence before declaring a block done
+---
+
 # Blockclose
 
 Before declaring any block done, verify each item below and show the evidence for it. An item without evidence shown is not done.
