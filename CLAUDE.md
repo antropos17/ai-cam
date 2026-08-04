@@ -54,7 +54,7 @@ Applies to every edit under `Assets/BugCam/Core/**`.
 
 ## Language & claims policy (marketing artifacts, README, overlays)
 - Never claim: "first ever", "proves the bug", "makes PhysX deterministic", "all writers".
-- Always frame: sensitivity ≠ bug; repeatability is environment-scoped; category is "chaos testing for game scenes".
+- Always frame: sensitivity ≠ bug; **BugCam does not claim cross-platform repeatability** — a PhysX bit-identical result is a **within-platform and within-version claim only**, and divergence across CPU vendors (Intel versus AMD) or from GPU operation ordering is **expected, not a defect**; category is "chaos testing for game scenes". (Hardened 2026-08-04, PR #12, replacing "repeatability is environment-scoped" — this line is standing instruction for every future session, so the softer wording here would keep regenerating regardless of `docs/SPEC.md`. Canonical text: `docs/SPEC.md` §14.)
 - Video overlays: numbers, not adjectives. Format: `INPUT 0.27 MM → SPREAD 1.74 M → 6,444×`.
 - The word "AI" appears zero times in the hero video and product UI.
 

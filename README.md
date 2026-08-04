@@ -127,9 +127,9 @@ Ignored locally (do not publish): `Library/`, `Temp/`, `Logs/`, `UserSettings/`,
 
 - Day 1 checkpoint **not passed** (`docs/STATUS.md`)
 - Divergence search, ghosts, evidence cameras, and export pipeline are not shipped
-- Repeatability claims are **environment-scoped** (Unity version, physics settings, threading mode) and meaningless without a recorded snapshot
-- Sensitivity is not automatically a bug — fragile scenes can be intentional design
 - No absolute cross-platform determinism guarantee
+- A repeatability PASS is a **within-platform and within-version claim only** — bit-identical PhysX results hold for the Unity version, platform, hardware, physics settings, threading mode and seed under which they were recorded, and are meaningless without that recorded snapshot; divergence across CPU vendors (Intel versus AMD) or from GPU operation ordering is **expected, not a defect** (canonical wording: `docs/SPEC.md` §14)
+- Sensitivity is not automatically a bug — fragile scenes can be intentional design
 - v0.1 excludes DOTS Physics, 2D, Cloth, CI integration, browser viewer, cloud, and AI features
 
 ## Development status
