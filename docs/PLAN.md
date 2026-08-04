@@ -182,6 +182,86 @@ Full cycle "press button → get MP4" with zero manual editing + published video
 
 ---
 
+## PHASE 3 — Placement detector family (appended 2026-08-04, product reframe)
+
+> **Placement note:** appended after the existing Block 2.6 entry in document order, positioned
+> below the DAY 3 buffer so that `DAY 2 CHECKPOINT (hard gate)` stays attached to the Day 2 blocks
+> it closes. No existing entry above was altered — blocks 2.2.3, 2.3, 2.4, 2.5 and 2.6 stand
+> exactly as written, and the evidence layer they build remains the critical path, because §20 of
+> `docs/SPEC.md` requires it under every one of the four reference points, placement findings
+> included.
+>
+> **Every block in this phase carries the status `PLANNED-NOT-RATIFIED`. No code may begin on any
+> of them until that block's contract is ratified**, per the 2.2.1 / 2.2.2 / 2.2.3 precedent
+> (contract first, no code). Product context: `docs/SPEC.md` §20 (unified comparison model) and
+> §21 (placement detector family, marked scope expansion and explicitly not v0.1). Research
+> provenance, sources and their re-verification status: `docs/RESEARCH-2026-08-04-placement.md` —
+> nothing in it was re-verified in this repository, so no number below may be treated as measured.
+
+### Block 3.0 — Empirical probes — `PLANNED-NOT-RATIFIED`
+**No code may begin until the Phase 3 contract is ratified.** Two measurements, **both blocking
+the Phase 3 contract** — the contract cannot be written, let alone ratified, until both have run
+and their numbers are recorded in `STATUS.md`. Precedent: the mandatory empirical preconditions of
+`docs/CONTRACT-2.2.2.md` and `docs/CONTRACT-2.2.3.md` (П-1…П-5), which were executed before any
+implementation code.
+
+- **Probe 1 — Rigidbody census on `Assets/BugCam/Tests/GateScene222.unity`.** Report how many
+  GameObjects carry a **Rigidbody**, versus how many carry a **Collider without one**. **Why it
+  blocks:** that ratio decides whether the **static clash probe** or the **settle probe** is the
+  primary detector — a scene that is overwhelmingly collider-without-Rigidbody cannot be diagnosed
+  by simulation at all, since nothing ever moves. Read-only census: the scene is frozen by the
+  Block 2.2.2 adjudication and used strictly read-only (`docs/CONTRACT-2.2.3.md` exit gate, item
+  1) — **the scene file must not be modified**.
+- **Probe 2 — sanitization cost of `Physics.ComputePenetration` on this project's Unity version.**
+  Measure (a) how often the documented defect class reproduces, separately on **convex** and
+  **non-convex** pairs, and (b) what the multi-sample workaround **actually costs in wall-clock
+  time on a representative scene**. **Why it blocks:** the research record reports absurd depth
+  output (743.8444 on a shallow overlap) or a `false` return at small depth, with a community
+  workaround of 16-or-more calls at varied positions — if that holds here, the flagship static
+  detector is up to 16× more expensive than assumed, which changes the design, not just a
+  constant. Numbers, not adjectives; raw API output is never trusted unsanitized
+  (`docs/SPEC.md` §14).
+
+### Block 3.1 — Static clash probe + triage layer — `PLANNED-NOT-RATIFIED`
+**No code may begin until this block's contract is ratified.** `Physics.ComputePenetration` over
+static-versus-static pairs — objects carrying no Rigidbody, which simulation can never detect —
+reporting penetration in millimetres. Reference point 1 of `docs/SPEC.md` §20 (frame zero against
+itself). **Shipped together with the triage layer, in the same release, not after it:** deterministic
+grouping, numeric severity ordering, a user-maintained plain-text exclusion list in the project,
+and **no AI** (`docs/SPEC.md` §15). Rationale for the coupling: an ungrouped detector produces an
+unusable volume of findings on a real scene, and BIM practice treats an enormous clash report as a
+process failure rather than a finding. Candidate published definitions to adopt rather than invent:
+PhyScene's Col_obj / Col_scene. Depends on both Block 3.0 probes.
+
+### Block 3.2 — Settle probe on existing Rigidbodies — `PLANNED-NOT-RATIFIED`
+**No code may begin until this block's contract is ratified.** Reference point 2 of
+`docs/SPEC.md` §20: release, simulate, compare against frame zero, report what moved. Includes
+**cascade initiator identification** — which body started the collapse, not merely which bodies
+ended up displaced. **This reuses the existing first-divergence-frame machinery on a different
+comparison axis**: `DivergenceResult.FirstDivergenceFrame` / `FirstDivergenceBodyId` (Block 1.5,
+argmax |Δpos| at the first divergence frame) applied to run-versus-frame-zero instead of
+run-versus-perturbed-run. Naming is reused from the audience's existing mental model (Bethesda
+Creation Kit's `Don't Havok Settle`), not reinvented.
+
+### Block 3.3 — Support-polygon stability margin — `PLANNED-NOT-RATIFIED`
+**No code may begin until this block's contract is ratified.** Centre-of-mass projection versus the
+convex hull of contact points, reporting a **stability margin in millimetres without running
+physics**. The criterion is **necessary, not sufficient** — any output must say so. Rigorous
+reference for stacked rigid blocks (equilibrium, friction-cone, compression-only interface forces):
+Whiting / Ochsendorf / Durand, SIGGRAPH Asia 2009, cited in
+`docs/RESEARCH-2026-08-04-placement.md`.
+
+### Block 3.4 — Gap and leak detection — `PLANNED-NOT-RATIFIED`
+**No code may begin until this block's contract is ratified.** Modelled on Valve Source Hammer:
+detect a level that is not sealed against the void, and produce the pointfile equivalent — a line
+from the leaking entity through the gap to the outside, so the user is told **where to look**,
+which maps onto our camera placement (`docs/SPEC.md` §7). **Recorded note: this is architecturally
+a separate product line with a different audience, and it must NOT be bundled into the first
+placement release.** Sequencing it into the same shipment as Blocks 3.1–3.3 would be a scope
+error, not an optimization.
+
+---
+
 ## Known risks → mitigations
 | Risk | Mitigation |
 |---|---|

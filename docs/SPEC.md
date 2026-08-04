@@ -148,13 +148,16 @@ Not in v0.1: DOTS Physics, 2D Physics, Cloth, complex root motion, multiplayer s
 ## 14. Honest caveats (README)
 
 - Sensitivity is not automatically a bug (fragile tower can be intended design).
-- Repeatability is environment-scoped (PASS is valid for pinned Unity version, platform, timestep, seed, config, launch order).
+- **BugCam does not claim cross-platform repeatability.** A PhysX bit-identical result is a **within-platform and within-version claim only** — it is valid for the pinned Unity version, platform, hardware, timestep, seed, config and launch order under which it was recorded, and for nothing else. Divergence across CPU vendors (Intel versus AMD) or from GPU operation ordering is **expected, not a defect**, and must never be reported as one. (Amended 2026-08-04, replacing the earlier softer "repeatability is environment-scoped" wording; source of the constraint: `docs/RESEARCH-2026-08-04-placement.md`, Hard constraints discovered. Consistent with §13, which already excludes absolute cross-platform repeatability from v0.1.)
+- **Raw `Physics.ComputePenetration` output is not trusted without sanitization.** The API has a documented defect class in which a shallow overlap returns an absurd depth (the recorded instance: **743.8444** for a capsule against a non-convex mesh) or returns `false` at small depth. Any detector built on it must sanitize before reporting, and must price in the multi-sample cost of doing so. (Recorded 2026-08-04; source and the documented workaround: `docs/RESEARCH-2026-08-04-placement.md`, Hard constraints discovered. Not re-verified in this repository — the blocking measurement is `docs/PLAN.md` Block 3.0, probe 2.)
 - Attribution is partial (observed writers + coverage, not guaranteed cause).
 - Solver effects exist (some divergence may originate inside the solver or processing order; label as "Cause unresolved").
 
 ## 15. What not to do
 
 No camera swarm as the main product; no own MCP bridge; no voice; no Higgsfield inside the product; no AI in the deterministic core; no universal gameplay capture first; no simultaneous PhysX+DOTS+2D; no cloud before a working `.bugcam`; no auto-fix promises; no week on pretty Editor UI before a correct Divergence Engine.
+**No AI in the triage layer** (added 2026-08-04, see §21): grouping, severity ordering and suppression are deterministic or they are not shipped.
+**No automated attempt to distinguish a bug from designer intent** (added 2026-08-04). A leaning tower may be authored on purpose; nothing in BugCam may guess which. The only permitted mechanism is a **user-maintained exclusion list stored as plain text in the project** — reviewable, diffable, and owned by the user.
 AI is optional only for: phrasing reports, explaining likely cause, test setup help, issue titles. All measurements work without AI, locally.
 
 ## 16. Build order
@@ -187,3 +190,40 @@ Until all 8 pass: no subscription, no hosted platform, no AI agents, no Asset St
 Attracts: Butterfly Test · Proves value: Repeat Test · Earns: Flaky Test Detector + CI · Retains: historical fragility data · Spreads: `.bugcam` evidence links · Explains: Root-Cause Attribution.
 
 BugCam is not a camera tool. It is a system that breaks a scene's repeatability in a controlled way, finds the moment of divergence, and turns it into verifiable evidence.
+
+## 20. Unified comparison model
+
+*(Added 2026-08-04 in the product reframe. Additive: sections 1–19 keep their numbering and their meaning.)*
+
+**Every BugCam measurement is a comparison of two states that differ only in the reference point.** There is no second measurement technology hiding behind the product's separate-looking features — there is one comparison, run against four different reference points:
+
+| # | Reference point | What the comparison yields |
+|---|---|---|
+| 1 | **Frame zero against itself** | **Geometric findings** — penetration, clearance, duplicates. No simulation has run; the two states are the scene and the scene, compared pairwise. |
+| 2 | **A run against frame zero** | **Settle findings** — what moved after release. |
+| 3 | **A run against another run** | **Repeatability** — §4.2 Repeat Test, §4.3 Flaky Test Detector. |
+| 4 | **A run against a perturbed run** | **Fragility and threshold** — §4.1 Butterfly Test, §6 Adaptive Epsilon Search. |
+
+**The divergence engine (§5) is shared across all four.** Its per-body normalized metrics, its significance gate and its first-divergence localization do not change with the reference point; only the reference point changes.
+
+**Only the epsilon threshold search (§6) is specific to the fourth reference point** — because at epsilon zero there is no threshold to search. Reference points 1–3 use the divergence engine without any search phase; the search exists precisely because reference point 4 introduces a magnitude that can be varied.
+
+Consequence for the product story: geometric findings, settle findings, repeatability and fragility are one instrument reported four ways, not four instruments. Consequence for engineering: the evidence layer (Blocks 2.2.3–2.6 in `docs/PLAN.md`) is required under **every** one of the four — a finding without a camera, a number and an evidence artifact is not a BugCam finding, whichever reference point produced it.
+
+## 21. Placement detector family
+
+*(Added 2026-08-04. **SCOPE EXPANSION — explicitly NOT part of v0.1.** Nothing in this section is ratified, nothing here licenses code. v0.1 scope stays exactly as §13 and `docs/PLAN.md` define it; the plan entries live under `docs/PLAN.md` Phase 3, every one of them marked PLANNED-NOT-RATIFIED. Research provenance, including sources and their re-verification status: `docs/RESEARCH-2026-08-04-placement.md`.)*
+
+This family applies reference point 1 and reference point 2 of §20 to placement errors — objects that intersect, float, are unstable, or leave the level unsealed.
+
+**1. Static clash probe.** `Physics.ComputePenetration` over static-versus-static pairs — objects that carry **no Rigidbody** and therefore **cannot be detected by simulation at all**: nothing ever moves them, so a settle probe sees nothing. This is reference point 1: frame zero against itself, penetration in millimetres. Published definitions to adopt rather than invent: PhyScene's collision rate (Col_obj / Col_scene). Raw API output is sanitized before it is reported (§14 caveat).
+
+**2. Settle probe.** Reference point 2 on **existing Rigidbodies**: release, simulate, compare against frame zero, report what moved and how far. The industry mental model already exists — Bethesda Creation Kit's `Don't Havok Settle` flag has made modders do this by hand for over a decade — so the naming is reused, not reinvented.
+
+**3. Support-polygon stability margin.** A body is statically stable when its centre of mass projects inside the convex hull of its contact points; the margin is the distance from that projection to the hull boundary, **in millimetres, without running physics**. Necessary, not sufficient — stated as such in any output. The rigorous treatment for stacked rigid blocks (equilibrium, friction-cone and compression-only interface forces) is the Whiting/Ochsendorf/Durand masonry work cited in the research record.
+
+**4. Gap and leak detector.** Modelled on Valve Source Hammer: a level not sealed against the void produces a `leaked!` diagnostic plus a pointfile drawing a line from the leaking entity through the gap to the outside, and the documented workflow is to follow that line. Both halves are reusable — the detection **and** the "here is where to look" line, which maps directly onto our camera placement (§7). Note carried from `docs/PLAN.md` Block 3.4: this is architecturally a **separate product line with a different audience** and must not be bundled into the first placement release.
+
+**5. Triage layer — deterministic grouping, numeric severity ordering, user-maintained exclusion list, no AI.** Borrowed wholesale from BIM clash-detection practice: separate hard clash from clearance clash from workflow clash; apply a numeric tolerance; group repeated clashes into a single issue; apply ignore rules for same-file and same-layer pairs. BIM practice explicitly treats an enormous clash report as a **process failure, not a finding**.
+
+**The triage layer is not optional and must ship together with the first detector.** An ungrouped detector produces an unusable volume of findings on a real scene — the detector without triage is not a smaller product, it is a broken one. Its mechanisms are constrained by §15: no AI anywhere in it, no automated attempt to tell a bug from designer intent, and the only suppression channel is a user-maintained plain-text exclusion list stored in the project.
