@@ -36,12 +36,24 @@ namespace BugCam.Core
             SceneCaptureObjectStatus status,
             int stableId,
             string reason)
+            : this(hierarchyPath, orderKey, status, stableId, reason, default)
+        {
+        }
+
+        public SceneCaptureObjectRecord(
+            string hierarchyPath,
+            string orderKey,
+            SceneCaptureObjectStatus status,
+            int stableId,
+            string reason,
+            SimulationMeshReference meshReference)
         {
             HierarchyPath = hierarchyPath ?? string.Empty;
             OrderKey = orderKey ?? string.Empty;
             Status = status;
             StableId = stableId;
             Reason = reason ?? string.Empty;
+            MeshReference = meshReference;
         }
 
         /// <summary>Human-readable path: object names joined with '/'.</summary>
@@ -61,6 +73,15 @@ namespace BugCam.Core
 
         /// <summary>Exclusion / failure / freeze note. Empty for plain captures.</summary>
         public string Reason { get; }
+
+        /// <summary>
+        /// 2.2.2: set for captured mesh-shaped objects (the first mesh collider of a
+        /// multi-collider static). Default (unset) for Box/Sphere — the manifest omits
+        /// the meshRef field entirely, keeping tower/domino manifests byte-unchanged.
+        /// </summary>
+        public SimulationMeshReference MeshReference { get; }
+
+        public bool HasMeshReference => MeshReference.IsSet;
     }
 
     /// <summary>
@@ -221,6 +242,8 @@ namespace BugCam.Core
             public float Mass;
             public Vector3 InitialLinearVelocity;
             public SimulationColliderShape Shape;
+            public SimulationMeshReference MeshReference;
+            public Vector3 FullScale;
         }
 
         private sealed class StaticCandidate
@@ -235,7 +258,19 @@ namespace BugCam.Core
             public string Key;
             public SceneCaptureObjectStatus Status;
             public string Reason;
+            public SimulationMeshReference MeshReference;
         }
+
+        /// <summary>
+        /// Unity's factory default for <see cref="MeshCollider.cookingOptions"/>; anything
+        /// else fails closed (ratified «нестандартная настройка ⇒ отказ» convention).
+        /// Pinned by test against a freshly created MeshCollider.
+        /// </summary>
+        public const MeshColliderCookingOptions DefaultMeshCookingOptions =
+            MeshColliderCookingOptions.CookForFasterSimulation |
+            MeshColliderCookingOptions.EnableMeshCleaning |
+            MeshColliderCookingOptions.WeldColocatedVertices |
+            MeshColliderCookingOptions.UseFastMidphase;
 
         public static SceneCaptureResult Capture(Scene scene)
         {
@@ -305,7 +340,8 @@ namespace BugCam.Core
                     record.Key,
                     record.Status,
                     stableId,
-                    record.Reason);
+                    record.Reason,
+                    record.MeshReference);
             }
 
             var hash = ComputeHash(objectRecords, dynamics, statics);
@@ -338,7 +374,9 @@ namespace BugCam.Core
                     candidate.Size,
                     candidate.Mass,
                     candidate.InitialLinearVelocity,
-                    candidate.Shape);
+                    candidate.Shape,
+                    candidate.MeshReference,
+                    candidate.FullScale);
             }
 
             var staticDefinitions = new SimulationStaticColliderDefinition[statics.Count];
@@ -453,6 +491,7 @@ namespace BugCam.Core
             List<RecordCandidate> records)
         {
             var capturedAny = false;
+            var firstMeshReference = default(SimulationMeshReference);
             for (var i = 0; i < colliders.Length; i++)
             {
                 var collider = colliders[i];
@@ -471,7 +510,8 @@ namespace BugCam.Core
 
                 if (!TryDescribeSupportedCollider(
                         transform, collider, out var position, out var rotation,
-                        out var size, out var shape, out var reason))
+                        out var size, out var shape, out var meshReference,
+                        out var fullScale, out var reason))
                 {
                     AddRecord(records, path, key, SceneCaptureObjectStatus.Failed, reason);
                     return;
@@ -481,8 +521,13 @@ namespace BugCam.Core
                 {
                     Key = key + "#" + i.ToString("D2", CultureInfo.InvariantCulture),
                     Definition = new SimulationStaticColliderDefinition(
-                        position, rotation, size, shape)
+                        position, rotation, size, shape, meshReference, fullScale)
                 });
+                if (!firstMeshReference.IsSet && meshReference.IsSet)
+                {
+                    firstMeshReference = meshReference;
+                }
+
                 capturedAny = true;
             }
 
@@ -495,7 +540,8 @@ namespace BugCam.Core
                     : SceneCaptureObjectStatus.ExcludedSafely,
                 capturedAny
                     ? string.Empty
-                    : "бесконтактный объект: нет активного контактного коллайдера");
+                    : "бесконтактный объект: нет активного контактного коллайдера",
+                firstMeshReference);
         }
 
         private static void ClassifyRigidbodyObject(
@@ -537,7 +583,8 @@ namespace BugCam.Core
 
             if (!TryDescribeSupportedCollider(
                     transform, contactCollider, out var position, out var rotation,
-                    out var size, out var shape, out var colliderReason))
+                    out var size, out var shape, out var meshReference,
+                    out var fullScale, out var colliderReason))
             {
                 AddRecord(records, path, key, SceneCaptureObjectStatus.Failed, colliderReason);
                 return;
@@ -545,11 +592,13 @@ namespace BugCam.Core
 
             if (rigidbody.isKinematic)
             {
+                // 2.2.2: kinematic mesh bodies freeze to static by the existing A2 rule;
+                // the static extension accepts any convex flag, so no extra gate here.
                 statics.Add(new StaticCandidate
                 {
                     Key = key + "#rb",
                     Definition = new SimulationStaticColliderDefinition(
-                        position, rotation, size, shape)
+                        position, rotation, size, shape, meshReference, fullScale)
                 });
 
                 var hasAnimator = HasAnimatorInParents(transform);
@@ -563,7 +612,16 @@ namespace BugCam.Core
                 AddRecord(records, path, key, SceneCaptureObjectStatus.FrozenKinematic,
                     hasAnimator
                         ? "заморожено в статику; управляется Animator (см. предупреждение)"
-                        : "заморожено в статику");
+                        : "заморожено в статику",
+                    meshReference);
+                return;
+            }
+
+            if (shape == SimulationColliderShape.Mesh && !meshReference.Convex)
+            {
+                AddRecord(records, path, key, SceneCaptureObjectStatus.Failed,
+                    "non-convex MeshCollider на динамическом теле не поддерживается " +
+                    "PhysX — включите convex или это тело не захватывается");
                 return;
             }
 
@@ -593,7 +651,9 @@ namespace BugCam.Core
                 Size = size,
                 Mass = rigidbody.mass,
                 InitialLinearVelocity = rigidbody.linearVelocity,
-                Shape = shape
+                Shape = shape,
+                MeshReference = meshReference,
+                FullScale = fullScale
             });
             AddRecord(
                 records,
@@ -602,7 +662,8 @@ namespace BugCam.Core
                 SceneCaptureObjectStatus.CapturedDynamic,
                 isSleeping
                     ? "спит на момент захвата (см. предупреждение)"
-                    : string.Empty);
+                    : string.Empty,
+                meshReference);
         }
 
         /// <summary>
@@ -663,12 +724,16 @@ namespace BugCam.Core
             out Quaternion rotation,
             out Vector3 size,
             out SimulationColliderShape shape,
+            out SimulationMeshReference meshReference,
+            out Vector3 fullScale,
             out string reason)
         {
             position = default;
             rotation = default;
             size = default;
             shape = SimulationColliderShape.Box;
+            meshReference = default;
+            fullScale = default;
 
             if (collider.sharedMaterial != null)
             {
@@ -708,10 +773,81 @@ namespace BugCam.Core
                 var diameter = 2f * sphere.radius * maxScale;
                 size = new Vector3(diameter, diameter, diameter);
             }
+            else if (collider is MeshCollider meshCollider)
+            {
+                // Block 2.2.2 (docs/CONTRACT-2.2.2.md): mesh captured by asset reference;
+                // geometry + contentHash read at THIS edit-mode capture point only
+                // (Amendment 2026-08-04) — the simulation point never reads geometry.
+                shape = SimulationColliderShape.Mesh;
+                var mesh = meshCollider.sharedMesh;
+                if (mesh == null)
+                {
+                    reason = "MeshCollider без sharedMesh — захватывать нечего";
+                    return false;
+                }
+
+                if (meshCollider.cookingOptions != DefaultMeshCookingOptions)
+                {
+                    reason = "нестандартные MeshCollider cookingOptions не воспроизводятся";
+                    return false;
+                }
+
+                if (lossyScale.x < 0f || lossyScale.y < 0f || lossyScale.z < 0f)
+                {
+                    // Адъюдикация 2026-08-04, вопрос №4: fail-closed без эмпирики.
+                    reason = "отрицательный масштаб (зеркалирование) на MeshCollider не " +
+                             "поддерживается в v0.1";
+                    return false;
+                }
+
+                var provider = SceneMeshResolve.Provider;
+                if (provider == null)
+                {
+                    reason = SceneMeshResolve.ProviderMissingReason;
+                    return false;
+                }
+
+                if (!provider.TryDescribeMeshAsset(
+                        mesh, out var assetGuid, out var localFileId, out var describeReason))
+                {
+                    reason = string.IsNullOrEmpty(describeReason)
+                        ? "меш-ассет недоступен: /" + mesh.name + " не найден в проекте"
+                        : describeReason;
+                    return false;
+                }
+
+                if (!TryComputeMeshContentHash(mesh, out var contentHash))
+                {
+                    reason = "геометрия меша нечитаема (Read/Write выключен): " + mesh.name +
+                             " — hash геометрии невычислим";
+                    return false;
+                }
+
+                position = transform.position;
+                rotation = transform.rotation;
+                var bounds = mesh.bounds;
+                // Адъюдикация №6: Size для меша = мировой AABB (mesh.bounds × |lossyScale|);
+                // objectScale = max компонента этого канала.
+                size = new Vector3(
+                    Mathf.Abs(lossyScale.x) * bounds.size.x,
+                    Mathf.Abs(lossyScale.y) * bounds.size.y,
+                    Mathf.Abs(lossyScale.z) * bounds.size.z);
+                fullScale = lossyScale;
+                meshReference = new SimulationMeshReference(
+                    assetGuid,
+                    localFileId,
+                    mesh.name,
+                    contentHash,
+                    meshCollider.convex,
+                    mesh.vertexCount,
+                    mesh.subMeshCount,
+                    bounds.center,
+                    bounds.size);
+            }
             else
             {
                 reason = "неподдерживаемый контактный шейп: " + collider.GetType().Name +
-                         " (v0.1 поддерживает Box и Sphere)";
+                         " (v0.1 поддерживает Box, Sphere и Mesh)";
                 return false;
             }
 
@@ -775,15 +911,86 @@ namespace BugCam.Core
             string path,
             string key,
             SceneCaptureObjectStatus status,
-            string reason)
+            string reason,
+            SimulationMeshReference meshReference = default)
         {
             records.Add(new RecordCandidate
             {
                 Path = path,
                 Key = key,
                 Status = status,
-                Reason = reason
+                Reason = reason,
+                MeshReference = meshReference
             });
+        }
+
+        /// <summary>
+        /// contentHash (адъюдикация №2/№10): SHA-256 over runtime geometry — vertices then
+        /// the triangles of ALL submeshes in fixed order, floats "R" invariant. False when
+        /// the geometry is unreadable (Read/Write off outside the edit-mode capture point,
+        /// or a runtime mesh stripped of its CPU copy): Unity returns silently empty
+        /// arrays there, which this check refuses to hash.
+        /// </summary>
+        private static bool TryComputeMeshContentHash(Mesh mesh, out string contentHash)
+        {
+            contentHash = string.Empty;
+            Vector3[] vertices;
+            try
+            {
+                vertices = mesh.vertices;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+
+            if (vertices == null || vertices.Length == 0 ||
+                vertices.Length != mesh.vertexCount)
+            {
+                return false;
+            }
+
+            var sb = new StringBuilder(vertices.Length * 24);
+            for (var i = 0; i < vertices.Length; i++)
+            {
+                sb.Append(Invariant(vertices[i])).Append('\n');
+            }
+
+            for (var subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
+            {
+                int[] triangles;
+                try
+                {
+                    triangles = mesh.GetTriangles(subMesh);
+                }
+                catch (Exception)
+                {
+                    return false;
+                }
+
+                sb.Append("sub").Append(subMesh.ToString(CultureInfo.InvariantCulture))
+                    .Append('|');
+                for (var i = 0; i < triangles.Length; i++)
+                {
+                    sb.Append(triangles[i].ToString(CultureInfo.InvariantCulture))
+                        .Append(',');
+                }
+
+                sb.Append('\n');
+            }
+
+            using (var sha = SHA256.Create())
+            {
+                var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(sb.ToString()));
+                var hex = new StringBuilder(bytes.Length * 2);
+                for (var i = 0; i < bytes.Length; i++)
+                {
+                    hex.Append(bytes[i].ToString("x2", CultureInfo.InvariantCulture));
+                }
+
+                contentHash = hex.ToString();
+                return true;
+            }
         }
 
         private static string ComputeHash(
@@ -809,8 +1016,15 @@ namespace BugCam.Core
                     .Append('|').Append(Invariant(d.Rotation))
                     .Append('|').Append(Invariant(d.Size))
                     .Append('|').Append(Invariant(d.Mass))
-                    .Append('|').Append(Invariant(d.InitialLinearVelocity))
-                    .Append('\n');
+                    .Append('|').Append(Invariant(d.InitialLinearVelocity));
+                // 2.2.2 ratified additive extension: Box/Sphere lines stay byte-identical;
+                // only mesh shapes gain the trailing |mesh: segment.
+                if (d.Shape == SimulationColliderShape.Mesh)
+                {
+                    AppendMeshHashTail(sb, d.MeshReference);
+                }
+
+                sb.Append('\n');
             }
 
             for (var i = 0; i < statics.Count; i++)
@@ -820,8 +1034,13 @@ namespace BugCam.Core
                     .Append('|').Append((int)s.Definition.Shape)
                     .Append('|').Append(Invariant(s.Definition.Position))
                     .Append('|').Append(Invariant(s.Definition.Rotation))
-                    .Append('|').Append(Invariant(s.Definition.Size))
-                    .Append('\n');
+                    .Append('|').Append(Invariant(s.Definition.Size));
+                if (s.Definition.Shape == SimulationColliderShape.Mesh)
+                {
+                    AppendMeshHashTail(sb, s.Definition.MeshReference);
+                }
+
+                sb.Append('\n');
             }
 
             using (var sha = SHA256.Create())
@@ -835,6 +1054,16 @@ namespace BugCam.Core
 
                 return hex.ToString();
             }
+        }
+
+        private static void AppendMeshHashTail(
+            StringBuilder sb,
+            SimulationMeshReference reference)
+        {
+            sb.Append("|mesh:").Append(reference.AssetGuid)
+                .Append(':').Append(reference.LocalFileId.ToString(CultureInfo.InvariantCulture))
+                .Append(':').Append(reference.ContentHash)
+                .Append(':').Append(reference.Convex ? '1' : '0');
         }
 
         private static string Invariant(float value)

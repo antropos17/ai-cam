@@ -14,12 +14,77 @@ namespace BugCam.Core
     /// <summary>
     /// Block 2.2.1 A2 primitive collider shapes. Box is the default (all pre-A2 call
     /// sites); Sphere interprets <see cref="SimulationBodyDefinition.Size"/> as a uniform
-    /// diameter vector (ratified: sphere Size = diameter).
+    /// diameter vector (ratified: sphere Size = diameter). Block 2.2.2 adds Mesh = 2
+    /// additively — existing values are never renumbered because (int)shape is part of
+    /// the capture hash.
     /// </summary>
     public enum SimulationColliderShape
     {
         Box = 0,
-        Sphere = 1
+        Sphere = 1,
+        Mesh = 2
+    }
+
+    /// <summary>
+    /// Block 2.2.2 mesh-by-asset-reference (docs/CONTRACT-2.2.2.md «Меш-ссылка»).
+    /// Geometry is captured by reference plus a full contentHash computed at the
+    /// edit-mode capture point; the structural fingerprint (vertexCount, subMeshCount,
+    /// mesh.bounds) is what the simulation point re-verifies bit-identically —
+    /// Amendment 2026-08-04, no tolerance.
+    /// </summary>
+    public readonly struct SimulationMeshReference
+    {
+        public SimulationMeshReference(
+            string assetGuid,
+            long localFileId,
+            string meshName,
+            string contentHash,
+            bool convex,
+            int vertexCount,
+            int subMeshCount,
+            Vector3 boundsCenter,
+            Vector3 boundsSize)
+        {
+            AssetGuid = assetGuid ?? string.Empty;
+            LocalFileId = localFileId;
+            MeshName = meshName ?? string.Empty;
+            ContentHash = contentHash ?? string.Empty;
+            Convex = convex;
+            VertexCount = vertexCount;
+            SubMeshCount = subMeshCount;
+            BoundsCenter = boundsCenter;
+            BoundsSize = boundsSize;
+        }
+
+        public string AssetGuid { get; }
+
+        public long LocalFileId { get; }
+
+        /// <summary>Diagnostics/report only — never part of the resolve.</summary>
+        public string MeshName { get; }
+
+        /// <summary>
+        /// SHA-256 over vertices + triangles of ALL submeshes in fixed order, floats in
+        /// "R" invariant format (адъюдикация №2/№10). Computed and verified at the
+        /// edit-mode capture point only — not re-verifiable in Play Mode.
+        /// </summary>
+        public string ContentHash { get; }
+
+        public bool Convex { get; }
+
+        public int VertexCount { get; }
+
+        public int SubMeshCount { get; }
+
+        public Vector3 BoundsCenter { get; }
+
+        public Vector3 BoundsSize { get; }
+
+        /// <summary>
+        /// False for default — a mesh-shaped definition without a reference. The default
+        /// struct bypasses the constructor, so the string properties are null here.
+        /// </summary>
+        public bool IsSet => VertexCount > 0 || !string.IsNullOrEmpty(AssetGuid);
     }
 
     public readonly struct SimulationBodyDefinition
@@ -60,6 +125,29 @@ namespace BugCam.Core
             float mass,
             Vector3 initialLinearVelocity,
             SimulationColliderShape shape)
+            : this(
+                stableId,
+                position,
+                rotation,
+                size,
+                mass,
+                initialLinearVelocity,
+                shape,
+                default,
+                Vector3.zero)
+        {
+        }
+
+        public SimulationBodyDefinition(
+            int stableId,
+            Vector3 position,
+            Quaternion rotation,
+            Vector3 size,
+            float mass,
+            Vector3 initialLinearVelocity,
+            SimulationColliderShape shape,
+            SimulationMeshReference meshReference,
+            Vector3 fullScale)
         {
             StableId = stableId;
             Position = position;
@@ -68,6 +156,8 @@ namespace BugCam.Core
             Mass = mass;
             InitialLinearVelocity = initialLinearVelocity;
             Shape = shape;
+            MeshReference = meshReference;
+            FullScale = fullScale;
         }
 
         public int StableId { get; }
@@ -76,6 +166,11 @@ namespace BugCam.Core
 
         public Quaternion Rotation { get; }
 
+        /// <summary>
+        /// Box: world extents; Sphere: uniform diameter. Mesh (2.2.2, адъюдикация №6):
+        /// the world AABB (<c>mesh.bounds × |lossyScale|</c>) — the score's objectScale
+        /// is the max component of this channel, so Box/Sphere semantics stay untouched.
+        /// </summary>
         public Vector3 Size { get; }
 
         public float Mass { get; }
@@ -83,6 +178,15 @@ namespace BugCam.Core
         public Vector3 InitialLinearVelocity { get; }
 
         public SimulationColliderShape Shape { get; }
+
+        /// <summary>2.2.2: set only for Shape == Mesh.</summary>
+        public SimulationMeshReference MeshReference { get; }
+
+        /// <summary>
+        /// 2.2.2: the real lossyScale for mesh bodies — the «unit primitive ×
+        /// localScale = Size» scheme does not apply to meshes.
+        /// </summary>
+        public Vector3 FullScale { get; }
     }
 
     /// <summary>
@@ -96,11 +200,24 @@ namespace BugCam.Core
             Quaternion rotation,
             Vector3 size,
             SimulationColliderShape shape)
+            : this(position, rotation, size, shape, default, Vector3.zero)
+        {
+        }
+
+        public SimulationStaticColliderDefinition(
+            Vector3 position,
+            Quaternion rotation,
+            Vector3 size,
+            SimulationColliderShape shape,
+            SimulationMeshReference meshReference,
+            Vector3 fullScale)
         {
             Position = position;
             Rotation = rotation;
             Size = size;
             Shape = shape;
+            MeshReference = meshReference;
+            FullScale = fullScale;
         }
 
         public Vector3 Position { get; }
@@ -110,6 +227,12 @@ namespace BugCam.Core
         public Vector3 Size { get; }
 
         public SimulationColliderShape Shape { get; }
+
+        /// <summary>2.2.2: set only for Shape == Mesh.</summary>
+        public SimulationMeshReference MeshReference { get; }
+
+        /// <summary>2.2.2: the real lossyScale for mesh statics.</summary>
+        public Vector3 FullScale { get; }
     }
 
     public readonly struct SimulationPerturbation
@@ -249,6 +372,20 @@ namespace BugCam.Core
     public sealed class SimulationHarness
     {
         private static int nextSceneId;
+
+        /// <summary>
+        /// 2.2.2 simulation-point mesh resolve failure — surfaces as a structured
+        /// <see cref="SimulationRunResult.Failure"/> whose reason starts with
+        /// <see cref="SceneMeshResolve.SimulationResolveFailedCode"/> (never a silent
+        /// geometry substitution).
+        /// </summary>
+        private sealed class MeshResolveException : Exception
+        {
+            public MeshResolveException(string message)
+                : base(message)
+            {
+            }
+        }
 
         public SimulationRunResult Run(SimulationRequest request)
         {
@@ -424,6 +561,12 @@ namespace BugCam.Core
                     temporarySceneUnloadRequested: false);
                 hasPendingSuccess = true;
             }
+            catch (MeshResolveException meshResolveException)
+            {
+                return SimulationRunResult.Failure(
+                    SceneMeshResolve.SimulationResolveFailedCode + ": " +
+                    meshResolveException.Message);
+            }
             catch (Exception exception)
             {
                 return SimulationRunResult.Failure("Simulation failed: " + exception.Message);
@@ -481,7 +624,11 @@ namespace BugCam.Core
                    IsPositiveFinite(body.Size.x) &&
                    IsPositiveFinite(body.Size.y) &&
                    IsPositiveFinite(body.Size.z) &&
-                   IsPositiveFinite(body.Mass);
+                   IsPositiveFinite(body.Mass) &&
+                   (body.Shape != SimulationColliderShape.Mesh ||
+                    (IsPositiveFinite(body.FullScale.x) &&
+                     IsPositiveFinite(body.FullScale.y) &&
+                     IsPositiveFinite(body.FullScale.z)));
         }
 
         private static bool IsPositiveFinite(float value)
@@ -518,6 +665,15 @@ namespace BugCam.Core
             var gameObject = new GameObject("BugCam Static");
             SceneManager.MoveGameObjectToScene(gameObject, simulationScene);
             gameObject.transform.SetPositionAndRotation(definition.Position, definition.Rotation);
+            if (definition.Shape == SimulationColliderShape.Mesh)
+            {
+                gameObject.transform.localScale = definition.FullScale;
+                var meshCollider = gameObject.AddComponent<MeshCollider>();
+                meshCollider.convex = definition.MeshReference.Convex;
+                meshCollider.sharedMesh = ResolveMeshForSimulation(definition.MeshReference);
+                return;
+            }
+
             gameObject.transform.localScale = definition.Size;
             if (definition.Shape == SimulationColliderShape.Sphere)
             {
@@ -538,6 +694,98 @@ namespace BugCam.Core
             SceneManager.MoveGameObjectToScene(ground, simulationScene);
         }
 
+        /// <summary>
+        /// 2.2.2 simulation point (Amendment 2026-08-04): geometry is NOT read here —
+        /// empirically unreadable for Read/Write-disabled meshes in Play Mode. The check
+        /// is null/unresolved plus a bit-identical structural fingerprint (vertexCount,
+        /// subMeshCount, every float of mesh.bounds), with NO tolerance: both sides read
+        /// the same asset with no arithmetic applied, so any difference is a real
+        /// difference. The HasShear mixed-tolerance precedent explicitly does not apply.
+        /// A run reaching this point without a capture-provided reference violates the
+        /// ratified run-path invariant and fails closed the same way.
+        /// </summary>
+        private static Mesh ResolveMeshForSimulation(SimulationMeshReference reference)
+        {
+            if (!reference.IsSet)
+            {
+                throw new MeshResolveException(
+                    "меш-ссылка отсутствует в определении тела — запуск без " +
+                    "предшествующего edit-mode-захвата (инвариант Поправки 2026-08-04)");
+            }
+
+            var provider = SceneMeshResolve.Provider;
+            if (provider == null)
+            {
+                throw new MeshResolveException(SceneMeshResolve.ProviderMissingReason);
+            }
+
+            if (!provider.TryResolveMesh(
+                    reference.AssetGuid,
+                    reference.LocalFileId,
+                    reference.MeshName,
+                    out var mesh,
+                    out var resolveFailureReason) || mesh == null)
+            {
+                throw new MeshResolveException(
+                    string.IsNullOrEmpty(resolveFailureReason)
+                        ? "меш-ассет недоступен: " + reference.AssetGuid + "/" +
+                          reference.MeshName + " не найден в проекте"
+                        : resolveFailureReason);
+            }
+
+            var bounds = mesh.bounds;
+            var fingerprintMatches =
+                mesh.vertexCount == reference.VertexCount &&
+                mesh.subMeshCount == reference.SubMeshCount &&
+                bounds.center.x == reference.BoundsCenter.x &&
+                bounds.center.y == reference.BoundsCenter.y &&
+                bounds.center.z == reference.BoundsCenter.z &&
+                bounds.size.x == reference.BoundsSize.x &&
+                bounds.size.y == reference.BoundsSize.y &&
+                bounds.size.z == reference.BoundsSize.z;
+            if (!fingerprintMatches)
+            {
+                throw new MeshResolveException(
+                    "меш-ассет изменился с момента захвата: структурный отпечаток не " +
+                    "совпадает (vertexCount/subMeshCount/bounds: " +
+                    DescribeFingerprint(
+                        reference.VertexCount,
+                        reference.SubMeshCount,
+                        reference.BoundsCenter,
+                        reference.BoundsSize) +
+                    " ≠ " +
+                    DescribeFingerprint(
+                        mesh.vertexCount,
+                        mesh.subMeshCount,
+                        bounds.center,
+                        bounds.size) + ")");
+            }
+
+            return mesh;
+        }
+
+        private static string DescribeFingerprint(
+            int vertexCount,
+            int subMeshCount,
+            Vector3 boundsCenter,
+            Vector3 boundsSize)
+        {
+            return vertexCount.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                   "/" +
+                   subMeshCount.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                   "/c(" + InvariantVector(boundsCenter) + ")s(" +
+                   InvariantVector(boundsSize) + ")";
+        }
+
+        private static string InvariantVector(Vector3 value)
+        {
+            return value.x.ToString("R", System.Globalization.CultureInfo.InvariantCulture) +
+                   "," +
+                   value.y.ToString("R", System.Globalization.CultureInfo.InvariantCulture) +
+                   "," +
+                   value.z.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
         private static Rigidbody CreateBody(
             Scene simulationScene,
             SimulationBodyDefinition body,
@@ -553,15 +801,27 @@ namespace BugCam.Core
             }
 
             gameObject.transform.SetPositionAndRotation(position, body.Rotation);
-            gameObject.transform.localScale = body.Size;
-            if (body.Shape == SimulationColliderShape.Sphere)
+            if (body.Shape == SimulationColliderShape.Mesh)
             {
-                // Unit sphere radius 0.5 × uniform localScale = Size ⇒ Size is the diameter.
-                gameObject.AddComponent<SphereCollider>();
+                // 2.2.2: meshes need their real scale — Size carries the world AABB for
+                // scoring/hash, not the transform scale.
+                gameObject.transform.localScale = body.FullScale;
+                var meshCollider = gameObject.AddComponent<MeshCollider>();
+                meshCollider.convex = body.MeshReference.Convex;
+                meshCollider.sharedMesh = ResolveMeshForSimulation(body.MeshReference);
             }
             else
             {
-                gameObject.AddComponent<BoxCollider>();
+                gameObject.transform.localScale = body.Size;
+                if (body.Shape == SimulationColliderShape.Sphere)
+                {
+                    // Unit sphere radius 0.5 × uniform localScale = Size ⇒ Size is the diameter.
+                    gameObject.AddComponent<SphereCollider>();
+                }
+                else
+                {
+                    gameObject.AddComponent<BoxCollider>();
+                }
             }
 
             var rigidbody = gameObject.AddComponent<Rigidbody>();
