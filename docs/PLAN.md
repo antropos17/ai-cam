@@ -155,7 +155,9 @@ Console output with threshold / first divergence frame / spread / amplification 
 
 ### Block 2.3 — Evidence overlay + export
 - UI Canvas overlay: test numbers, frame counter, timeline, logo.
-- Unity Recorder: MP4 1080×1920 and 1920×1080. Evidence card: PNG 1200×630 via RenderTexture → EncodeToPNG.
+- Video export **ratified 2026-08-04: `UnityEditor.Media.MediaEncoder`** — MP4 1080×1920 and 1920×1080 (supersedes the Unity Recorder line below; empirical verification: STATUS.md Evidence log 2026-08-04, MediaEncoder probe). Rationale: the caller supplies frames, which guarantees exactly one frame per 0.02 s physics step at the exact rational 50/1, so the video is evidence rather than illustration; zero new package dependencies in a project whose whole claim is reproducibility; the encoder lifecycle is not tied to Play Mode, unlike Recorder.
+- SUPERSEDED 2026-08-04 (kept visible per the adjudication, do not implement): Unity Recorder: MP4 1080×1920 and 1920×1080.
+- Evidence card: PNG 1200×630 via RenderTexture → EncodeToPNG.
 - `RetroPlayer` (kinematic scrub/slow-mo playback) + the actual 2×2 viewport/RenderTexture compositing (deferred from Block 2.1, needs live GPU Editor session).
 
 ### Block 2.4 — EditorWindow
