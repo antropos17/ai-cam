@@ -780,6 +780,7 @@ Public | Static)` — `GhostEvidenceTests.cs:547-551`,
   потребителей.
 
 **Замер, разрешающий такую форму** (`Library/BugCamEvidence/probe-2.2.3-v1-pins/REPORT.md`,
+дословная транскрипция в репозитории: `docs/EVIDENCE-probe-2.2.3-v1-pins.md`,
 2026-08-05, живой редактор Unity `6000.3.21f1`):
 
 - пины 1, 2 и 3 — бит-идентичны;
